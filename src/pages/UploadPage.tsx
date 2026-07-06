@@ -1,0 +1,1026 @@
+import React, { useCallback, useState } from "react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Upload, CheckCircle2, AlertCircle, Loader2, ArrowRight, Sparkles, Star } from "lucide-react";
+import { createResume, extractResume, extractResumeFromText, findResumeByFileName, updateResume, updateResumeFileUrl, uploadResumeFile } from "@/services/api";
+import { cn } from "@/lib/utils";
+import * as XLSX from "xlsx";
+import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { getResumeFileType, RESUME_FILE_ACCEPT } from "@/lib/resume-files";
+import { notifyResumesUpdated } from "@/lib/resume-events";
+import { normalizeEducationText, normalizeResumeText, normalizeWorkHistoryText } from "@/lib/resume-text";
+import { STATUS_OPTIONS } from "@/lib/resume-status";
+import type { ResumeInsert, ResumeUpdate } from "@/types/types";
+
+interface UploadItem {
+  file: File;
+  status: "uploading" | "extracting" | "success" | "error";
+  progress: number;
+  message: string;
+}
+
+interface UploadNotes {
+  interview_date: string;
+  department: string;
+  hiring_manager: string;
+  job_level_type: string;
+  job_level_number: string;
+  status: string;
+  interview_comment: string;
+  priority_focus: boolean;
+}
+
+interface EditableParsed {
+  position: string;
+  work_history: string;
+  education: string;
+}
+
+interface ParsedResult {
+  interview_date: string;
+  department: string;
+  status: string;
+  nature: string;
+  position: string;
+  age_experience: string;
+  job_level: string;
+  work_history: string;
+  education: string;
+  interview_comment: string;
+}
+
+interface ConfirmDialogState {
+  open: boolean;
+  resumeId?: string;
+  fileName?: string;
+  parsed: ParsedResult | null;
+}
+
+const defaultUploadNotes: UploadNotes = {
+  interview_date: "",
+  department: "",
+  hiring_manager: "",
+  job_level_type: "",
+  job_level_number: "",
+  status: "pending",
+  interview_comment: "",
+  priority_focus: false,
+};
+
+const defaultEditableParsed: EditableParsed = {
+  position: "",
+  work_history: "",
+  education: "",
+};
+
+const defaultConfirmDialogState: ConfirmDialogState = {
+  open: false,
+  parsed: null,
+};
+
+const FILE_FORMAT_LABELS = [
+  { label: "图片", types: "JPG / PNG" },
+  { label: "文档", types: "PDF / DOC / DOCX / HTML" },
+  { label: "表格", types: "XLS / XLSX" },
+];
+
+async function extractTextFromPdf(file: File): Promise<string> {
+  const pdfjs = await import("pdfjs-dist");
+  pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+  const arrayBuffer = await file.arrayBuffer();
+  let pdf;
+
+  try {
+    pdf = await pdfjs.getDocument({ data: arrayBuffer, useSystemFonts: true }).promise;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("API version") && message.includes("Worker version")) {
+      throw new Error("PDF worker version mismatch. Please refresh the page and retry.");
+    }
+    throw error;
+  }
+
+  let text = "";
+
+  try {
+    for (let pageIndex = 1; pageIndex <= pdf.numPages; pageIndex += 1) {
+      const page = await pdf.getPage(pageIndex);
+      const content = await page.getTextContent();
+      text += content.items
+        .map((item: unknown) => {
+          if (typeof item !== "object" || item === null || !("str" in item)) return "";
+          return String((item as { str: unknown }).str);
+        })
+        .filter(Boolean)
+        .join(" ") + "\n";
+    }
+  } finally {
+    await pdf.cleanup();
+  }
+
+  return text.trim();
+}
+
+async function extractTextFromDoc(file: File): Promise<string> {
+  const mammoth = await import("mammoth");
+  const arrayBuffer = await file.arrayBuffer();
+  const result = await mammoth.extractRawText({ arrayBuffer });
+  return result.value.trim();
+}
+
+async function extractTextFromExcel(file: File): Promise<string> {
+  const arrayBuffer = await file.arrayBuffer();
+  const workbook = XLSX.read(arrayBuffer, { type: "array" });
+  let text = "";
+
+  workbook.SheetNames.forEach((sheetName) => {
+    const worksheet = workbook.Sheets[sheetName];
+    const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as unknown[][];
+    text += jsonData.map((row) => row.join("\t")).join("\n") + "\n";
+  });
+
+  return text.trim();
+}
+
+async function parseExcelRows(file: File): Promise<ResumeInsert[]> {
+  const arrayBuffer = await file.arrayBuffer();
+  const workbook = XLSX.read(arrayBuffer, { type: "array" });
+  const rows: ResumeInsert[] = [];
+
+  workbook.SheetNames.forEach((sheetName) => {
+    const worksheet = workbook.Sheets[sheetName];
+    const jsonRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(worksheet, { defval: "" });
+
+    jsonRows.forEach((row) => {
+      const name = normalizeResumeText(String(row["姓名"] || row["name"] || ""));
+      if (!name) return;
+
+      rows.push({
+        interview_date: normalizeResumeText(String(row["面试时间"] || row["interview_date"] || "")),
+        department: normalizeResumeText(String(row["用人部门"] || row["department"] || "")),
+        hiring_manager: normalizeResumeText(String(row["用人经理"] || row["hiring_manager"] || "")),
+        name,
+        status: normalizeResumeText(String(row["状态"] || row["status"] || "")),
+        nature: normalizeResumeText(String(row["性质"] || row["nature"] || "")),
+        position: normalizeResumeText(String(row["职位"] || row["position"] || "")),
+        age_experience: normalizeResumeText(String(row["年龄/工作经验"] || row["age_experience"] || "")),
+        job_level: normalizeResumeText(String(row["职级"] || row["job_level"] || "")),
+        work_history: normalizeWorkHistoryText(String(row["工作履历"] || row["work_history"] || "")),
+        education: normalizeEducationText(String(row["学历"] || row["education"] || "")),
+        interview_comment: normalizeResumeText(String(row["面评"] || row["interview_comment"] || "")),
+        resume_file_name: file.name,
+      });
+    });
+  });
+
+  return rows;
+}
+
+async function extractTextFromHtml(file: File): Promise<string> {
+  const html = await file.text();
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, "text/html");
+  return cleanText(doc.body.innerText || doc.body.textContent || "");
+}
+
+async function extractTextFromFile(file: File, fileType: string): Promise<string> {
+  let text = "";
+  if (fileType === "pdf") text = await extractTextFromPdf(file);
+  else if (fileType === "doc" || fileType === "docx") text = await extractTextFromDoc(file);
+  else if (fileType === "xls" || fileType === "xlsx") text = await extractTextFromExcel(file);
+  else if (fileType === "html") text = await extractTextFromHtml(file);
+  else throw new Error("不支持的文件格式");
+  return cleanText(text);
+}
+
+function cleanText(text: string): string {
+  return normalizeResumeText(text);
+}
+
+function inferDepartmentFromFileName(fileName: string): string {
+  const normalizedFileName = normalizeResumeText(fileName)
+    .replace(/\.(pdf|doc|docx|xls|xlsx|png|jpg|jpeg|bmp|webp|html|htm)$/i, "");
+  const parts = normalizedFileName.split("-");
+  if (parts.length >= 3) {
+    return normalizeResumeText(parts.slice(2).join("-"));
+  }
+  return "";
+}
+
+/** 将多行文本格式化为带序号的列表（每行前加 "1. "、"2. "...） */
+function formatAsList(text: string): string {
+  if (!text) return "";
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (lines.length <= 1) return lines.join("");
+  return lines.map((line, i) => `${i + 1}. ${line}`).join("\n");
+}
+
+function toParsedResult(data: ParsedResult | null | undefined): ParsedResult | null {
+  if (!data) return null;
+  return {
+    interview_date: String(data.interview_date || ""),
+    department: String(data.department || ""),
+    status: String(data.status || ""),
+    nature: String(data.nature || ""),
+    position: String(data.position || ""),
+    age_experience: String(data.age_experience || ""),
+    job_level: String(data.job_level || ""),
+    work_history: String(data.work_history || ""),
+    education: String(data.education || ""),
+    interview_comment: String(data.interview_comment || ""),
+  };
+}
+
+function mergeParsedText(preferred: string, fallback: string, normalizer: (value: string) => string = normalizeResumeText): string {
+  const preferredText = normalizer(preferred || "");
+  const fallbackText = normalizer(fallback || "");
+  if (!preferredText) return fallbackText;
+  if (!fallbackText) return preferredText;
+  return preferredText.length >= fallbackText.length ? preferredText : fallbackText;
+}
+
+function inferWorkHistoryFromExtractedText(text: string): string {
+  const normalized = normalizeResumeText(text).replace(/\s+/g, " ");
+  const workSectionStart = normalized.search(/工作经历|职业经历|工作背景/);
+  const workSectionEnd = normalized.search(/教育经历|教育背景|项目经历|技能标签|自我评价/);
+  const scope = workSectionStart >= 0
+    ? normalized.slice(workSectionStart, workSectionEnd > workSectionStart ? workSectionEnd : undefined)
+    : normalized;
+
+  const entries: string[] = [];
+  const compactScope = scope.replace(/\s+/g, " ");
+  const pattern = /([\u4e00-\u9fa5A-Za-z0-9&·()（）]{2,40}?)\s+(\d{4}[./]\d{1,2}\s*[-–—~]\s*(?:至今|\d{4}[./]\d{1,2}))(?:[\s\S]{0,40}?)(AI\s*产品运营|产品经理|解决方案\s*\/\s*平台产品经理|解决方案\/平台产品经理|产品运营|运营|工程师|专家|负责人|总监|研究员|顾问|实习生|主任)/g;
+
+  for (const match of compactScope.matchAll(pattern)) {
+    const company = normalizeResumeText(match[1] || "");
+    const period = normalizeResumeText(match[2] || "").replace(/\s+/g, "");
+    const title = normalizeResumeText(match[3] || "").replace(/\s+/g, "");
+
+    if (!company || !title || !period) continue;
+    if (/简历编号|更新时间|职责业绩|所在部门|汇报对象|下属人数|工作地点|月薪|招聘专用|Baidu招聘专用/.test(company)) continue;
+
+    const mergedLine = `${company}-${title}-${period}`;
+    if (!entries.includes(mergedLine)) entries.push(mergedLine);
+  }
+
+  return normalizeWorkHistoryText(entries.join("\n"));
+}
+
+function inferEducationFromExtractedText(text: string): string {
+  const normalized = normalizeResumeText(text).replace(/\s+/g, " ");
+  const educationSectionStart = normalized.search(/教育经历|教育背景/);
+  const educationSectionEnd = normalized.search(/项目经历|技能标签|自我评价|语言能力/);
+  const scope = educationSectionStart >= 0
+    ? normalized.slice(educationSectionStart, educationSectionEnd > educationSectionStart ? educationSectionEnd : undefined)
+    : normalized;
+
+  const entries: string[] = [];
+  const pattern = /([\u4e00-\u9fa5A-Za-z0-9&·()（）]{2,60}?(?:大学|学院|学校))\s*(博士后|博士|硕士研究生|硕士|本科|学士|大专)/g;
+
+  for (const match of scope.matchAll(pattern)) {
+    const school = normalizeResumeText(match[1] || "");
+    const degree = normalizeResumeText(match[2] || "");
+    if (!school || !degree) continue;
+    const line = `${school}-${degree}`;
+    if (!entries.includes(line)) entries.push(line);
+  }
+
+  return normalizeEducationText(entries.join("\n"));
+}
+
+function buildHeuristicParsedResult(text: string, fallbackPosition = ""): ParsedResult | null {
+  const workHistory = inferWorkHistoryFromExtractedText(text);
+  const education = inferEducationFromExtractedText(text);
+
+  if (!workHistory && !education) return null;
+
+  return {
+    interview_date: "",
+    department: "",
+    status: "",
+    nature: "",
+    position: normalizeResumeText(fallbackPosition),
+    age_experience: "",
+    job_level: "",
+    work_history: workHistory,
+    education,
+    interview_comment: "",
+  };
+}
+
+function buildDuplicateMergePatch(
+  existing: ResumeInsert,
+  parsed: ParsedResult | null | undefined,
+): ResumeUpdate {
+  if (!parsed) return {};
+
+  const patch: ResumeUpdate = {};
+  const existingRecord = existing as unknown as Record<string, unknown>;
+  const assignIfBetter = (
+    key: keyof ParsedResult,
+    normalizer?: (value: string) => string,
+    preferIncoming = false,
+  ) => {
+    const incomingRaw = String(parsed[key] || "");
+    const incoming = normalizer ? normalizer(incomingRaw) : normalizeResumeText(incomingRaw);
+    const currentRaw = String(existingRecord[key] || "");
+    const current = normalizer ? normalizer(currentRaw) : normalizeResumeText(currentRaw);
+    if (!incoming) return;
+    if (preferIncoming || !current || incoming.length > current.length) {
+      (patch as Record<string, string>)[key] = incoming;
+    }
+  };
+
+  assignIfBetter("interview_date");
+  assignIfBetter("department");
+  assignIfBetter("status");
+  assignIfBetter("nature");
+  assignIfBetter("position");
+  assignIfBetter("age_experience");
+  assignIfBetter("job_level");
+  assignIfBetter("work_history", normalizeWorkHistoryText, true);
+  assignIfBetter("education", normalizeEducationText, true);
+  assignIfBetter("interview_comment");
+
+  return patch;
+}
+
+export default function UploadPage() {
+  const [isDragging, setIsDragging] = useState(false);
+  const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
+  const [uploadNotes, setUploadNotes] = useState<UploadNotes>(defaultUploadNotes);
+  const [editableParsed, setEditableParsed] = useState<EditableParsed>(defaultEditableParsed);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(defaultConfirmDialogState);
+
+  const buildManualResumePatch = useCallback((): ResumeUpdate => {
+    const patch: ResumeUpdate = {};
+    if (uploadNotes.interview_date.trim()) patch.interview_date = uploadNotes.interview_date.trim();
+    if (uploadNotes.department.trim()) {
+      // "其他:部门名" 只保存冒号后的部门名
+      const dept = uploadNotes.department.startsWith("其他:")
+        ? uploadNotes.department.replace("其他:", "").trim()
+        : uploadNotes.department.trim();
+      if (dept) patch.department = normalizeResumeText(dept);
+    }
+    if (uploadNotes.hiring_manager.trim()) patch.hiring_manager = normalizeResumeText(uploadNotes.hiring_manager);
+    // 合并职级类型和数字：如 "技术6级"
+    const levelType = uploadNotes.job_level_type.trim();
+    const levelNumber = uploadNotes.job_level_number.trim();
+    if (levelType || levelNumber) {
+      patch.job_level = normalizeResumeText(`${levelType}${levelNumber}`);
+    }
+    if (uploadNotes.status.trim()) patch.status = uploadNotes.status.trim();
+
+    const normalizedComment = normalizeResumeText(uploadNotes.interview_comment);
+    if (uploadNotes.priority_focus && normalizedComment) {
+      patch.interview_comment = `[高优关注] ${normalizedComment}`;
+    } else if (uploadNotes.priority_focus) {
+      patch.interview_comment = "[高优关注]";
+    } else if (normalizedComment) {
+      patch.interview_comment = normalizedComment;
+    }
+
+    return patch;
+  }, [uploadNotes]);
+
+  const openConfirmDialog = useCallback((resumeId: string | undefined, fileName: string, parsed: ParsedResult | null) => {
+    setConfirmDialog({
+      open: true,
+      resumeId,
+      fileName,
+      parsed,
+    });
+
+    setEditableParsed({
+      position: parsed?.position || "",
+      work_history: formatAsList(normalizeWorkHistoryText(parsed?.work_history || "")),
+      education: formatAsList(normalizeEducationText(parsed?.education || "")),
+    });
+
+    setUploadNotes((prev) => ({
+      ...prev,
+      department: prev.department || inferDepartmentFromFileName(fileName) || parsed?.department || "",
+      interview_date: prev.interview_date || parsed?.interview_date || "",
+      job_level_type: prev.job_level_type || "",
+      job_level_number: prev.job_level_number || "",
+      status: prev.status || parsed?.status || "pending",
+      interview_comment: prev.interview_comment || parsed?.interview_comment || "",
+    }));
+  }, []);
+
+  const processFile = useCallback(async (file: File, type: string, itemIndex: number): Promise<boolean> => {
+    const update = (patch: Partial<UploadItem>) =>
+      setUploadItems((prev) => prev.map((item, idx) => (idx === itemIndex ? { ...item, ...patch } : item)));
+
+    try {
+      const existing = await findResumeByFileName(file.name);
+      if (existing) {
+        update({ status: "uploading", progress: 30, message: "文件名匹配已有记录，正在补传附件..." });
+        const fileUrl = await uploadResumeFile(file);
+        update({ status: "extracting", progress: 65, message: "检测到重复简历，正在更新解析信息..." });
+
+        let parsed: ParsedResult | null = null;
+        if (type === "image") {
+          const resp = await extractResume(fileUrl, file.name, false, undefined, true);
+          parsed = toParsedResult(resp.data as ParsedResult | null | undefined);
+        } else {
+          const text = await extractTextFromFile(file, type);
+          if (!text || text.trim().length === 0) throw new Error("无法从文件中提取文字内容");
+          const resp = await extractResumeFromText(text, file.name, fileUrl, false, undefined, true);
+          const remoteParsed = toParsedResult(resp.data as ParsedResult | null | undefined);
+          const heuristicParsed = buildHeuristicParsedResult(text, remoteParsed?.position || "");
+          parsed = {
+            interview_date: remoteParsed?.interview_date || "",
+            department: remoteParsed?.department || "",
+            status: remoteParsed?.status || "",
+            nature: remoteParsed?.nature || "",
+            position: mergeParsedText(remoteParsed?.position || "", heuristicParsed?.position || ""),
+            age_experience: remoteParsed?.age_experience || "",
+            job_level: remoteParsed?.job_level || "",
+            work_history: mergeParsedText(remoteParsed?.work_history || "", heuristicParsed?.work_history || "", normalizeWorkHistoryText),
+            education: mergeParsedText(remoteParsed?.education || "", heuristicParsed?.education || "", normalizeEducationText),
+            interview_comment: remoteParsed?.interview_comment || "",
+          };
+        }
+
+        const mergePatch = buildDuplicateMergePatch(existing, parsed);
+        await updateResume(existing.id, {
+          ...mergePatch,
+          resume_file_url: fileUrl,
+          resume_file_name: file.name,
+        });
+        notifyResumesUpdated();
+        toast.info(`检测到重复简历，附件和解析信息已更新到 ${existing.name} 所在记录`);
+        update({ status: "success", progress: 100, message: "重复简历已合并更新到原记录 ✓" });
+        return true;
+      }
+
+      if (type === "xls" || type === "xlsx") {
+        update({ status: "extracting", progress: 20, message: "正在解析 Excel..." });
+        const rows = await parseExcelRows(file);
+        if (rows.length === 0) throw new Error("Excel 中没有可导入的候选人数据");
+
+        let importedCount = 0;
+        let updatedCount = 0;
+        for (const row of rows) {
+          const matchedResume = row.resume_file_name ? await findResumeByFileName(row.resume_file_name) : null;
+          if (matchedResume) {
+            await updateResume(matchedResume.id, row);
+            updatedCount += 1;
+          } else {
+            await createResume(row);
+            importedCount += 1;
+          }
+        }
+
+        notifyResumesUpdated();
+        update({
+          status: "success",
+          progress: 100,
+          message: `Excel 已导入 ${importedCount} 条，更新 ${updatedCount} 条 ✓`,
+        });
+        toast.success(`Excel 导入完成：新增 ${importedCount} 条，更新 ${updatedCount} 条`);
+        return true;
+      }
+
+      update({ status: type === "image" ? "uploading" : "extracting", progress: 30, message: type === "image" ? "正在上传..." : "正在解析文件内容..." });
+      const fileUrl = await uploadResumeFile(file);
+
+      if (type === "image") {
+        update({ status: "extracting", progress: 70, message: "AI 正在分析简历..." });
+        const resp = await extractResume(fileUrl, file.name);
+        if (resp.merged && resp.name) {
+          notifyResumesUpdated();
+          toast.info(`检测到重复简历，已自动合并并更新到 ${resp.name} 所在记录`);
+          update({ status: "success", progress: 100, message: "重复简历已自动更新到原记录 ✓" });
+          return true;
+        }
+        openConfirmDialog(resp.data?.id, file.name, toParsedResult(resp.data));
+        notifyResumesUpdated();
+        update({ status: "success", progress: 100, message: "提取完成，等待确认 ✓" });
+        return true;
+      }
+
+      const text = await extractTextFromFile(file, type);
+      if (!text || text.trim().length === 0) throw new Error("无法从文件中提取文字内容");
+      update({ progress: 80, message: "AI 正在分析简历..." });
+      const resp = await extractResumeFromText(text, file.name, fileUrl);
+      if (resp.merged && resp.name) {
+        notifyResumesUpdated();
+        toast.info(`检测到重复简历，已自动合并并更新到 ${resp.name} 所在记录`);
+        update({ status: "success", progress: 100, message: "重复简历已自动更新到原记录 ✓" });
+        return true;
+      }
+      openConfirmDialog(resp.data?.id, file.name, toParsedResult(resp.data));
+      notifyResumesUpdated();
+      update({ status: "success", progress: 100, message: "提取完成，等待确认 ✓" });
+      return true;
+    } catch (error) {
+      update({ status: "error", progress: 0, message: error instanceof Error ? error.message : "处理失败" });
+      return true;
+    }
+  }, [openConfirmDialog]);
+
+  const handleFiles = useCallback(async (files: FileList | File[]) => {
+    const fileArray = Array.from(files);
+    const typedFiles = fileArray
+      .map((file) => ({ file, type: getResumeFileType(file) }))
+      .filter((item): item is { file: File; type: string } => item.type !== null);
+
+    if (typedFiles.length === 0) {
+      toast.error("请上传支持的简历格式（图片、PDF、Word、Excel）");
+      return;
+    }
+
+    const startIndex = uploadItems.length;
+    const newItems: UploadItem[] = typedFiles.map(({ file }) => ({
+      file,
+      status: "uploading",
+      progress: 0,
+      message: "等待处理...",
+    }));
+    setUploadItems((prev) => [...prev, ...newItems]);
+
+    for (let index = 0; index < typedFiles.length; index += 1) {
+      const { file, type } = typedFiles[index];
+      await processFile(file, type, startIndex + index);
+    }
+  }, [processFile, uploadItems.length]);
+
+  const onDragOver = (event: React.DragEvent) => {
+    event.preventDefault();
+    setIsDragging(true);
+  };
+
+  const onDragLeave = (event: React.DragEvent) => {
+    event.preventDefault();
+    setIsDragging(false);
+  };
+
+  const onDrop = (event: React.DragEvent) => {
+    event.preventDefault();
+    setIsDragging(false);
+    if (event.dataTransfer.files.length > 0) handleFiles(event.dataTransfer.files);
+  };
+
+  const onFileInput = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files?.length) {
+      handleFiles(event.target.files);
+      event.target.value = "";
+    }
+  };
+
+  const updateNotes = <K extends keyof UploadNotes>(key: K, value: UploadNotes[K]) => {
+    setUploadNotes((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const handleConfirmSave = async () => {
+    if (!confirmDialog.resumeId) {
+      setConfirmDialog(defaultConfirmDialogState);
+      setEditableParsed(defaultEditableParsed);
+      return;
+    }
+
+    try {
+      const patch = buildManualResumePatch();
+      // 合入用户编辑过的解析字段（保存时去掉列表序号前缀）
+      if (editableParsed.position.trim()) {
+        // "其他:xxx" 格式只保存冒号后的内容
+        const pos = editableParsed.position.startsWith("其他:")
+          ? editableParsed.position.replace("其他:", "").trim()
+          : editableParsed.position.trim();
+        if (pos) patch.position = pos;
+      }
+      if (editableParsed.work_history.trim()) {
+        patch.work_history = editableParsed.work_history.trim()
+          .split("\n").map((l) => l.replace(/^\d+\.\s*/, "").trim()).filter(Boolean).join("\n");
+      }
+      if (editableParsed.education.trim()) {
+        patch.education = editableParsed.education.trim()
+          .split("\n").map((l) => l.replace(/^\d+\.\s*/, "").trim()).filter(Boolean).join("\n");
+      }
+
+      if (Object.keys(patch).length > 0) {
+        await updateResume(confirmDialog.resumeId, patch);
+      }
+      notifyResumesUpdated();
+      toast.success("已确认并补充简历信息");
+      setConfirmDialog(defaultConfirmDialogState);
+      setUploadNotes(defaultUploadNotes);
+      setEditableParsed(defaultEditableParsed);
+    } catch {
+      toast.error("确认信息保存失败");
+    }
+  };
+
+  const hasSuccess = uploadItems.some((item) => item.status === "success");
+
+  return (
+    <div className="relative mx-auto max-w-7xl space-y-5 px-4 py-4 md:px-6 md:py-6 animate-fade-in">
+      <div className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
+        <div className="aurora-blob -top-24 left-10 h-60 w-60 bg-sky-300/25" />
+        <div className="aurora-blob right-8 top-12 h-72 w-72 bg-emerald-300/20 [animation-delay:1.5s]" />
+      </div>
+
+      <div className="glass-panel-strong premium-ring rounded-[1.75rem] px-5 py-4 md:px-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-center gap-4">
+            <div className="h-12 w-12 rounded-2xl bg-gradient-primary flex items-center justify-center shadow-lg shadow-cyan-500/25">
+              <Sparkles className="h-6 w-6 text-slate-700" />
+            </div>
+            <div>
+              <div className="mb-1 inline-flex items-center gap-1.5 rounded-full border border-cyan-200/70 bg-cyan-50/70 px-2.5 py-1 text-[11px] font-semibold text-cyan-700">
+                AI Resume Intelligence
+              </div>
+              <h1 className="text-2xl font-bold tracking-tight text-foreground md:text-3xl">简历上传</h1>
+              <p className="text-sm text-muted-foreground">轻量上传区 + AI 自动识别 + 批量导入</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2 text-center sm:min-w-[24rem]">
+            {FILE_FORMAT_LABELS.map((format) => (
+              <div key={format.label} className="rounded-2xl border border-white/70 bg-white/70 px-3 py-2 shadow-sm backdrop-blur-xl">
+                <p className="text-sm font-bold text-foreground">{format.label}</p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">{format.types}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-4">
+        <div
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+          onDrop={onDrop}
+          onClick={() => document.getElementById("file-input")?.click()}
+          className={cn(
+            "premium-ring interactive-lift relative cursor-pointer overflow-hidden rounded-[1.75rem] border border-white/60 p-5 transition-all duration-300 md:p-6",
+            "min-h-[13.5rem] bg-white/60 shadow-card backdrop-blur-2xl",
+            isDragging ? "scale-[1.01] bg-cyan-50/80 shadow-hover" : "hover:bg-white/80"
+          )}
+        >
+          <div className="absolute inset-0 pointer-events-none">
+            <div className="absolute -left-16 -top-20 h-52 w-52 rounded-full bg-sky-300/25 blur-3xl" />
+            <div className="absolute -bottom-24 right-8 h-56 w-56 rounded-full bg-emerald-300/25 blur-3xl" />
+            <div className="absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-white/80 to-transparent" />
+          </div>
+
+          <div className="relative z-10 grid h-full gap-5 md:grid-cols-[auto_minmax(0,1fr)_auto] md:items-center">
+            <div
+              className={cn(
+                "flex h-16 w-16 items-center justify-center rounded-3xl bg-gradient-primary shadow-xl shadow-cyan-500/25 transition-all duration-300 md:h-20 md:w-20",
+                isDragging && "scale-110 rotate-3"
+              )}
+            >
+              <Upload className="h-8 w-8 text-slate-700" />
+            </div>
+
+            <div className="min-w-0 text-left">
+              <p className="text-xl font-bold tracking-tight text-foreground md:text-2xl">
+                {isDragging ? "松开文件，开始智能解析" : "拖拽或点击上传简历"}
+              </p>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+                先上传文件，系统完成解析后会弹出确认窗口，在那里统一核对解析结果并补充备注信息。
+              </p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <span className="rounded-full bg-cyan-50 px-3 py-1 text-xs font-medium text-cyan-700 ring-1 ring-cyan-200/70">AI 提取</span>
+                <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-medium text-teal-700 ring-1 ring-teal-200/70">确认后入库</span>
+                <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700 ring-1 ring-emerald-200/70">批量处理</span>
+              </div>
+            </div>
+
+            <Button type="button" className="rounded-2xl bg-gradient-primary px-6 text-slate-700 shadow-lg shadow-cyan-500/25 hover:shadow-xl hover:shadow-cyan-500/30">
+              选择文件
+              <ArrowRight className="ml-2 h-4 w-4" />
+            </Button>
+          </div>
+          <input
+            id="file-input"
+            type="file"
+            accept={RESUME_FILE_ACCEPT}
+            multiple
+            className="hidden"
+            onChange={onFileInput}
+          />
+        </div>
+      </div>
+
+      {uploadItems.length > 0 && (
+        <div className="glass-panel-strong rounded-[1.75rem] overflow-hidden">
+          <div className="px-5 py-4 border-b border-cyan-100/70 flex items-center justify-between">
+            <h2 className="font-semibold text-foreground">处理进度</h2>
+            <span className="rounded-full bg-white/75 px-2.5 py-1 text-xs text-muted-foreground">
+              {uploadItems.filter((item) => item.status === "success").length} / {uploadItems.length} 完成
+            </span>
+          </div>
+          <div className="divide-y divide-cyan-100/60">
+            {uploadItems.map((item, index) => (
+              <div key={index} className="flex items-center gap-3 px-5 py-3.5 transition-colors hover:bg-white/45">
+                <div className={cn(
+                  "h-9 w-9 rounded-2xl flex items-center justify-center shrink-0 border",
+                  item.status === "success" ? "bg-emerald-50 border-emerald-200" :
+                    item.status === "error" ? "bg-red-50 border-red-200" :
+                      "bg-cyan-50 border-cyan-200"
+                )}>
+                  {item.status === "success" && <CheckCircle2 className="h-4 w-4 text-emerald-500" />}
+                  {item.status === "error" && <AlertCircle className="h-4 w-4 text-red-500" />}
+                  {(item.status === "uploading" || item.status === "extracting") && (
+                    <Loader2 className="h-4 w-4 text-cyan-500 animate-spin" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <p className="text-sm font-medium text-foreground truncate">{item.file.name}</p>
+                    <span className={cn(
+                      "text-xs shrink-0",
+                      item.status === "success" ? "text-emerald-600" :
+                        item.status === "error" ? "text-red-500" : "text-muted-foreground"
+                    )}>{item.message}</span>
+                  </div>
+                  {(item.status === "uploading" || item.status === "extracting") && (
+                    <div className="relative h-1.5 rounded-full bg-cyan-100 overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-gradient-primary transition-all duration-500"
+                        style={{ width: `${item.progress}%` }}
+                      />
+                    </div>
+                  )}
+                  {item.status === "success" && (
+                    <div className="h-1.5 rounded-full bg-emerald-100 overflow-hidden">
+                      <div className="h-full w-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-400" />
+                    </div>
+                  )}
+                  {item.status === "error" && <div className="h-1.5 rounded-full bg-red-100" />}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {hasSuccess && (
+        <div className="flex justify-center">
+          <Button
+            onClick={() => document.getElementById("manage-section")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+            size="lg"
+            className="rounded-2xl bg-gradient-primary px-8 text-slate-700 shadow-lg shadow-cyan-500/25 hover:shadow-xl hover:shadow-cyan-500/30"
+          >
+            查看简历管理表
+            <ArrowRight className="ml-2 h-4 w-4" />
+          </Button>
+        </div>
+      )}
+
+      <Dialog open={confirmDialog.open} onOpenChange={(open) => { if (!open) { setConfirmDialog(defaultConfirmDialogState); setEditableParsed(defaultEditableParsed); } }}>
+        <DialogContent className="max-w-[calc(100%-2rem)] md:max-w-5xl bg-white/95 backdrop-blur-xl border border-cyan-100/70">
+          <DialogHeader>
+            <DialogTitle>确认解析结果</DialogTitle>
+            <DialogDescription>核对 AI 解析内容，并补充备注信息后再完成本次入库。</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-5 lg:grid-cols-[minmax(0,1.15fr)_24rem]">
+            <div className="glass-panel rounded-[1.5rem] p-4 space-y-3">
+              <div className="text-sm font-semibold text-foreground">解析结果</div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-2xl border border-cyan-100/70 bg-white/75 p-3 sm:col-span-2">
+                  <div className="text-xs font-semibold text-muted-foreground">文件名</div>
+                  <div className="mt-1 text-sm text-foreground break-words">{confirmDialog.fileName || "-"}</div>
+                </div>
+                <div className="rounded-2xl border border-cyan-100/70 bg-white/75 p-3 sm:col-span-2">
+                  <div className="text-xs font-semibold text-muted-foreground">工作履历</div>
+                  <Textarea
+                    value={editableParsed.work_history}
+                    onChange={(e) => setEditableParsed((prev) => ({ ...prev, work_history: e.target.value }))}
+                    placeholder="AI 解析的工作履历"
+                    className="mt-1 min-h-[8rem] rounded-xl bg-white/80 text-sm"
+                  />
+                </div>
+                <div className="rounded-2xl border border-cyan-100/70 bg-white/75 p-3 sm:col-span-2">
+                  <div className="text-xs font-semibold text-muted-foreground">学历</div>
+                  <Textarea
+                    value={editableParsed.education}
+                    onChange={(e) => setEditableParsed((prev) => ({ ...prev, education: e.target.value }))}
+                    placeholder="AI 解析的学历"
+                    className="mt-1 min-h-[5rem] rounded-xl bg-white/80 text-sm"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="glass-panel rounded-[1.5rem] p-4 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-base font-semibold text-foreground">补充备注</h2>
+                  <p className="text-xs text-muted-foreground">确认后一起写入当前简历记录。</p>
+                </div>
+                <span className="rounded-full bg-white/75 px-2.5 py-1 text-[11px] font-medium text-muted-foreground ring-1 ring-cyan-200/60">Optional</span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-foreground">面试时间</label>
+                  <Input
+                    type="date"
+                    value={uploadNotes.interview_date}
+                    onChange={(event) => updateNotes("interview_date", event.target.value)}
+                    className="h-9 rounded-xl bg-white/80 text-sm"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-foreground">用人经理</label>
+                  <Input
+                    value={uploadNotes.hiring_manager}
+                    onChange={(event) => updateNotes("hiring_manager", event.target.value)}
+                    placeholder="用人经理姓名"
+                    className="h-9 rounded-xl bg-white/80 text-sm"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-foreground">职级</label>
+                <div className="grid grid-cols-[1fr_1fr] gap-2">
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {[
+                      { label: "技术", value: "技术" },
+                      { label: "产品", value: "产品" },
+                    ].map((opt) => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => updateNotes("job_level_type", uploadNotes.job_level_type === opt.value ? "" : opt.value)}
+                        className={cn(
+                          "rounded-xl border px-3 py-1.5 text-xs font-semibold transition-all",
+                          uploadNotes.job_level_type === opt.value
+                            ? "border-cyan-400 bg-cyan-50 text-cyan-700"
+                            : "border-cyan-100 bg-white/70 text-muted-foreground hover:bg-white"
+                        )}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div>
+                    <Input
+                      type="number"
+                      value={uploadNotes.job_level_number}
+                      onChange={(event) => updateNotes("job_level_number", event.target.value)}
+                      placeholder="输入数字"
+                      className="h-9 rounded-xl bg-white/80 text-sm"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-foreground">用人部门</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { label: "MaaS", tone: "border-sky-300 bg-sky-50 text-sky-700" },
+                    { label: "DuMate", tone: "border-blue-300 bg-blue-50 text-blue-700" },
+                    { label: "千帆策略部", tone: "border-violet-300 bg-violet-50 text-violet-700" },
+                    { label: "秒哒产品部", tone: "border-emerald-300 bg-emerald-50 text-emerald-700" },
+                    { label: "伐谋产品部", tone: "border-amber-300 bg-amber-50 text-amber-700" },
+                    { label: "其他", tone: "border-slate-300 bg-slate-50 text-slate-700" },
+                  ].map((dept) => {
+                    const isActive = dept.label === "其他"
+                      ? uploadNotes.department === "其他" || uploadNotes.department.startsWith("其他:")
+                      : uploadNotes.department === dept.label;
+                    return (
+                      <button
+                        key={dept.label}
+                        type="button"
+                        onClick={() => {
+                          if (dept.label === "其他") {
+                            updateNotes("department", "其他:");
+                          } else {
+                            updateNotes("department", dept.label);
+                          }
+                        }}
+                        className={cn(
+                          "rounded-xl border px-3 py-1.5 text-xs font-semibold transition-all",
+                          isActive
+                            ? dept.tone
+                            : "border-cyan-100 bg-white/70 text-muted-foreground hover:bg-white"
+                        )}
+                      >
+                        {dept.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {(uploadNotes.department === "其他:" || uploadNotes.department.startsWith("其他:")) && (
+                  <Input
+                    value={uploadNotes.department.replace("其他:", "")}
+                    onChange={(event) => updateNotes("department", `其他:${event.target.value}`)}
+                    placeholder="请输入部门名称"
+                    className="mt-2 h-8 rounded-xl bg-white/80 text-sm"
+                  />
+                )}
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-foreground">职位</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { label: "产品", value: "产品" },
+                    { label: "工程", value: "工程" },
+                    { label: "算法", value: "算法" },
+                    { label: "运营", value: "运营" },
+                    { label: "生态", value: "生态" },
+                    { label: "其他", value: "其他" },
+                  ].map((opt) => {
+                    const isActive = opt.value === "其他"
+                      ? editableParsed.position.startsWith("其他:")
+                      : editableParsed.position === opt.value;
+                    return (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => {
+                          if (opt.value === "其他") {
+                            setEditableParsed((prev) => ({ ...prev, position: "其他:" }));
+                          } else {
+                            setEditableParsed((prev) => ({ ...prev, position: opt.value }));
+                          }
+                        }}
+                        className={cn(
+                          "rounded-xl border px-3 py-1.5 text-xs font-semibold transition-all",
+                          isActive
+                            ? "border-cyan-400 bg-cyan-50 text-cyan-700"
+                            : "border-cyan-100 bg-white/70 text-muted-foreground hover:bg-white"
+                        )}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {editableParsed.position.startsWith("其他:") && (
+                  <Input
+                    value={editableParsed.position.replace("其他:", "")}
+                    onChange={(e) => setEditableParsed((prev) => ({ ...prev, position: `其他:${e.target.value}` }))}
+                    placeholder="请输入职位名称"
+                    className="mt-2 h-8 rounded-xl bg-white/80 text-sm"
+                  />
+                )}
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-foreground">状态</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {STATUS_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => updateNotes("status", option.value)}
+                      className={cn(
+                        "rounded-xl border px-3 py-1.5 text-xs font-semibold transition-all",
+                        uploadNotes.status === option.value
+                          ? option.chipTone
+                          : "border-cyan-100 bg-white/70 text-muted-foreground hover:bg-white"
+                      )}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-foreground">面评</label>
+                <Textarea
+                  value={uploadNotes.interview_comment}
+                  onChange={(event) => updateNotes("interview_comment", event.target.value)}
+                  placeholder="补充重点判断、风险点或推荐原因"
+                  className="min-h-[5.5rem] resize-none rounded-xl bg-white/80 text-sm"
+                />
+              </div>
+
+              <Button
+                type="button"
+                variant={uploadNotes.priority_focus ? "default" : "outline"}
+                onClick={() => updateNotes("priority_focus", !uploadNotes.priority_focus)}
+                className={cn(
+                  "w-full rounded-xl text-sm",
+                  uploadNotes.priority_focus
+                    ? "border-0 bg-gradient-to-r from-amber-500 to-orange-500 text-white"
+                    : "border-cyan-100 bg-white/70 hover:bg-white"
+                )}
+              >
+                <Star className={cn("h-4 w-4 mr-2", uploadNotes.priority_focus && "fill-current")} />
+                {uploadNotes.priority_focus ? "已标记高优关注" : "标记高优关注"}
+              </Button>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button onClick={handleConfirmSave} className="bg-gradient-primary text-slate-700 border-0">确认并保存</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

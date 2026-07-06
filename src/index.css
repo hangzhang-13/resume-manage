@@ -1,0 +1,160 @@
+/* stylelint-disable */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Definition of the design system. All colors, gradients, fonts, etc should be defined here.
+All colors MUST be HSL.
+*/
+
+@layer base {
+  :root {
+    --radius: 1.1rem;
+    --background: 210 60% 98%;
+    --foreground: 220 52% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 220 52% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 52% 10%;
+    --primary: 199 89% 48%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 162 73% 46%;
+    --secondary-foreground: 0 0% 100%;
+    --muted: 200 40% 94%;
+    --muted-foreground: 213 16% 42%;
+    --accent: 190 60% 95%;
+    --accent-foreground: 198 89% 36%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 198 89% 48% / 0.14;
+    --input: 198 89% 48% / 0.16;
+    --ring: 190 90% 45%;
+    --chart-1: 199 89% 48%;
+    --chart-2: 162 73% 46%;
+    --chart-3: 187 82% 45%;
+    --chart-4: 215 90% 58%;
+    --chart-5: 172 76% 40%;
+    --sidebar-background: 222 47% 11%;
+    --sidebar-foreground: 210 40% 98%;
+    --sidebar-primary: 239 84% 67%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 239 84% 67% / 0.15;
+    --sidebar-accent-foreground: 239 84% 67%;
+    --sidebar-border: 239 84% 67% / 0.2;
+    --sidebar-ring: 239 84% 67%;
+    --gradient-primary: linear-gradient(135deg, #8fd3ff 0%, #b9f3ec 48%, #dcfce7 100%);
+    --gradient-card: linear-gradient(135deg, rgba(143,211,255,0.28), rgba(185,243,236,0.24), rgba(220,252,231,0.22));
+    --gradient-background: radial-gradient(circle at 16% 8%, rgba(143,211,255,0.22), transparent 30%), radial-gradient(circle at 86% 18%, rgba(185,243,236,0.20), transparent 30%), linear-gradient(135deg, #fcfeff 0%, #f4fbff 46%, #f7fdf9 100%);
+    --shadow-card: 0 24px 70px rgba(122, 167, 196, 0.10);
+    --shadow-hover: 0 28px 80px rgba(122, 167, 196, 0.16);
+  }
+
+  .dark {
+    --background: 222 47% 11%;
+    --foreground: 210 40% 98%;
+    --card: 222 47% 14%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222 47% 14%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 239 84% 67%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 263 70% 50%;
+    --secondary-foreground: 0 0% 100%;
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 239 84% 67% / 0.15;
+    --accent-foreground: 239 84% 67%;
+    --destructive: 0 63% 31%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 239 84% 67% / 0.2;
+    --input: 239 84% 67% / 0.2;
+    --ring: 239 84% 67%;
+    --chart-1: 239 84% 67%;
+    --chart-2: 263 70% 50%;
+    --chart-3: 187 70% 45%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%;
+    --sidebar-background: 222 47% 9%;
+    --sidebar-foreground: 210 40% 98%;
+    --sidebar-primary: 239 84% 67%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 239 84% 67% / 0.15;
+    --sidebar-accent-foreground: 239 84% 67%;
+    --sidebar-border: 239 84% 67% / 0.2;
+    --sidebar-ring: 239 84% 67%;
+    --gradient-primary: linear-gradient(135deg, #38bdf8 0%, #2dd4bf 52%, #22c55e 100%);
+    --gradient-card: linear-gradient(135deg, rgba(56,189,248,0.14), rgba(45,212,191,0.12), rgba(34,197,94,0.10));
+    --gradient-background: radial-gradient(circle at 20% 10%, rgba(14,165,233,0.26), transparent 34%), radial-gradient(circle at 82% 18%, rgba(20,184,166,0.22), transparent 34%), linear-gradient(135deg, #07111f 0%, #082f49 54%, #052e2b 100%);
+    --shadow-card: 0 24px 70px rgba(8, 47, 73, 0.26);
+    --shadow-hover: 0 32px 90px rgba(14, 165, 233, 0.26);
+  }
+}
+
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    background: var(--gradient-background);
+    background-attachment: fixed;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    border: 1px solid rgba(255, 255, 255, 0.55);
+    background: rgba(255, 255, 255, 0.58);
+    box-shadow: var(--shadow-card);
+    backdrop-filter: blur(24px);
+  }
+
+  .glass-panel-strong {
+    border: 1px solid rgba(255, 255, 255, 0.70);
+    background: rgba(255, 255, 255, 0.72);
+    box-shadow: var(--shadow-card);
+    backdrop-filter: blur(24px);
+  }
+
+  .premium-ring {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .premium-ring::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(135deg, rgba(143,211,255,0.7), rgba(185,243,236,0.55), rgba(220,252,231,0.6));
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+
+  .aurora-blob {
+    pointer-events: none;
+    position: absolute;
+    border-radius: 9999px;
+    filter: blur(64px);
+    animation: float-soft 9s ease-in-out infinite alternate;
+  }
+
+  .interactive-lift {
+    transition: all 300ms ease-out;
+  }
+
+  .interactive-lift:hover {
+    transform: translateY(-3px);
+    box-shadow: var(--shadow-hover);
+  }
+}
+
+@keyframes float-soft {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to { transform: translate3d(16px, -14px, 0) scale(1.05); }
+}
