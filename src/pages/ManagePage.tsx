@@ -679,14 +679,21 @@ export default function ManagePage() {
                                 )}
                                 <div>
                                   {resume.resume_file_url ? (
-                                    <a
-                                      href={resume.resume_file_url}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="text-cyan-500 hover:text-secondary hover:underline text-sm font-medium transition-colors whitespace-normal break-words"
+                                    <button
+                                      type="button"
+                                      onClick={async (e) => {
+                                        e.stopPropagation();
+                                        try {
+                                          const url = await getResumeFileDownloadUrl(resume.resume_file_url);
+                                          window.open(url, "_blank", "noopener,noreferrer");
+                                        } catch {
+                                          toast.error("获取文件链接失败");
+                                        }
+                                      }}
+                                      className="text-cyan-500 hover:text-secondary hover:underline text-sm font-medium transition-colors whitespace-normal break-words text-left"
                                     >
                                       {value || "查看"}
-                                    </a>
+                                    </button>
                                   ) : value ? (
                                     <span className="text-foreground text-sm font-medium whitespace-normal break-words">{value}</span>
                                   ) : (

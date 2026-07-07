@@ -51,8 +51,6 @@ export interface ResumeUpdate {
   work_history?: string;
   education?: string;
   interview_comment?: string;
-  resume_file_url?: string;
-  resume_file_name?: string;
 }
 
 // 表格列定义

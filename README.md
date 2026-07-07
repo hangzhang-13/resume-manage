@@ -41,6 +41,17 @@
 
 Vite、TypeScript、React、Supabase
 
+## 环境变量
+
+项目使用 Vite 环境变量连接 Supabase，请在本地 `.env` 或部署平台中配置：
+
+```
+VITE_SUPABASE_URL=
+VITE_SUPABASE_ANON_KEY=
+```
+
+变量缺失时，页面会显示 Supabase 配置提示，不会因为 `supabaseUrl is required` 直接白屏。
+
 ## 本地开发
 
 ### 如何在本地编辑代码？
@@ -87,6 +98,17 @@ Vite、TypeScript、React、Supabase
 # Step 4: IDE终端输入命令行，安装依赖：npm i
 # Step 5: IDE终端输入命令行，启动开发服务器：npm run dev -- --host 127.0.0.1
 ```
+
+### Vercel 部署
+
+在 Vercel 部署前，请进入 Project Settings / Environment Variables，添加：
+
+```
+VITE_SUPABASE_URL
+VITE_SUPABASE_ANON_KEY
+```
+
+添加或修改环境变量后，需要在 Vercel 中重新 Redeploy，新的变量才会进入前端构建产物。
 
 ### 如何开发后端服务？
 

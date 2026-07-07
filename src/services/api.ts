@@ -3,7 +3,7 @@ import type { Resume, ResumeInsert, ResumeUpdate } from "@/types/types";
 
 // 数据库实际存在的列（新增列后在此处加入即可生效）
 const DB_COLUMNS = new Set([
-  "interview_date", "department", "name", "status", "nature",
+  "interview_date", "department", "hiring_manager", "name", "status", "nature",
   "position", "age_experience", "job_level", "work_history", "education",
   "interview_comment", "resume_file_url", "resume_file_name",
 ]);
@@ -57,12 +57,7 @@ export async function fetchResumes(): Promise<Resume[]> {
   if (error) throw error;
   if (!Array.isArray(data)) return [];
 
-  return await Promise.all(
-    data.map(async (resume) => ({
-      ...resume,
-      resume_file_url: await getResumeFileDownloadUrl(resume.resume_file_url).catch(() => ""),
-    }))
-  );
+  return data as Resume[];
 }
 
 // 更新简历信息
@@ -146,7 +141,6 @@ interface ExtractResponse {
   data?: Resume;
   duplicate?: boolean;
   merged?: boolean;
-  preview?: boolean;
   name?: string;
   extractedData?: Record<string, string>;
   mergedIntoId?: string;
@@ -154,17 +148,10 @@ interface ExtractResponse {
 }
 
 // 调用提取简历 Edge Function（图片用 OCR）
-export async function extractResume(
-  fileUrl: string,
-  fileName: string,
-  force = false,
-  duplicateData?: Record<string, string>,
-  preview = false,
-): Promise<ExtractResponse> {
+export async function extractResume(fileUrl: string, fileName: string, force = false, duplicateData?: Record<string, string>): Promise<ExtractResponse> {
   const body: Record<string, unknown> = { file_url: fileUrl, file_name: fileName };
   if (force) body.force = true;
   if (duplicateData) body.duplicate_data = duplicateData;
-  if (preview) body.preview = true;
 
   const { data, error } = await supabase.functions.invoke("extract-resume", { body });
 
@@ -181,18 +168,10 @@ export async function extractResume(
 }
 
 // 调用提取简历 Edge Function（文本直接传给 LLM 解析）
-export async function extractResumeFromText(
-  text: string,
-  fileName: string,
-  fileUrl?: string,
-  force = false,
-  duplicateData?: Record<string, string>,
-  preview = false,
-): Promise<ExtractResponse> {
+export async function extractResumeFromText(text: string, fileName: string, fileUrl?: string, force = false, duplicateData?: Record<string, string>): Promise<ExtractResponse> {
   const body: Record<string, unknown> = { text, file_name: fileName, file_url: fileUrl || "" };
   if (force) body.force = true;
   if (duplicateData) body.duplicate_data = duplicateData;
-  if (preview) body.preview = true;
 
   const { data, error } = await supabase.functions.invoke("extract-resume", { body });
 

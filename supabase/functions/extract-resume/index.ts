@@ -94,7 +94,6 @@ serve(async (req: Request): Promise<Response> => {
   let fileName: string;
   let text: string | undefined;
   let force: boolean;
-  let preview: boolean;
   let duplicateData: ResumeData | undefined;
 
   try {
@@ -103,7 +102,6 @@ serve(async (req: Request): Promise<Response> => {
     fileName = body.file_name || "resume";
     text = body.text;
     force = body.force === true;
-    preview = body.preview === true;
     duplicateData = body.duplicate_data;
     if (!fileUrl && !text) throw new Error("Missing file_url or text");
   } catch {
@@ -158,13 +156,6 @@ serve(async (req: Request): Promise<Response> => {
       }
 
       resumeData = await extractResumeInfo(apiKey, extractText);
-    }
-
-    if (preview) {
-      return new Response(JSON.stringify({ success: true, preview: true, data: resumeData }), {
-        status: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
     }
 
     // 检查是否重复（如果不是 force 模式）

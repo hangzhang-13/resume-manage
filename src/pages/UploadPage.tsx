@@ -91,18 +91,7 @@ async function extractTextFromPdf(file: File): Promise<string> {
   const pdfjs = await import("pdfjs-dist");
   pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
   const arrayBuffer = await file.arrayBuffer();
-  let pdf;
-
-  try {
-    pdf = await pdfjs.getDocument({ data: arrayBuffer, useSystemFonts: true }).promise;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes("API version") && message.includes("Worker version")) {
-      throw new Error("PDF worker version mismatch. Please refresh the page and retry.");
-    }
-    throw error;
-  }
-
+  const pdf = await pdfjs.getDocument({ data: arrayBuffer, useSystemFonts: true }).promise;
   let text = "";
 
   try {
@@ -234,120 +223,6 @@ function toParsedResult(data: ParsedResult | null | undefined): ParsedResult | n
   };
 }
 
-function mergeParsedText(preferred: string, fallback: string, normalizer: (value: string) => string = normalizeResumeText): string {
-  const preferredText = normalizer(preferred || "");
-  const fallbackText = normalizer(fallback || "");
-  if (!preferredText) return fallbackText;
-  if (!fallbackText) return preferredText;
-  return preferredText.length >= fallbackText.length ? preferredText : fallbackText;
-}
-
-function inferWorkHistoryFromExtractedText(text: string): string {
-  const normalized = normalizeResumeText(text).replace(/\s+/g, " ");
-  const workSectionStart = normalized.search(/工作经历|职业经历|工作背景/);
-  const workSectionEnd = normalized.search(/教育经历|教育背景|项目经历|技能标签|自我评价/);
-  const scope = workSectionStart >= 0
-    ? normalized.slice(workSectionStart, workSectionEnd > workSectionStart ? workSectionEnd : undefined)
-    : normalized;
-
-  const entries: string[] = [];
-  const compactScope = scope.replace(/\s+/g, " ");
-  const pattern = /([\u4e00-\u9fa5A-Za-z0-9&·()（）]{2,40}?)\s+(\d{4}[./]\d{1,2}\s*[-–—~]\s*(?:至今|\d{4}[./]\d{1,2}))(?:[\s\S]{0,40}?)(AI\s*产品运营|产品经理|解决方案\s*\/\s*平台产品经理|解决方案\/平台产品经理|产品运营|运营|工程师|专家|负责人|总监|研究员|顾问|实习生|主任)/g;
-
-  for (const match of compactScope.matchAll(pattern)) {
-    const company = normalizeResumeText(match[1] || "");
-    const period = normalizeResumeText(match[2] || "").replace(/\s+/g, "");
-    const title = normalizeResumeText(match[3] || "").replace(/\s+/g, "");
-
-    if (!company || !title || !period) continue;
-    if (/简历编号|更新时间|职责业绩|所在部门|汇报对象|下属人数|工作地点|月薪|招聘专用|Baidu招聘专用/.test(company)) continue;
-
-    const mergedLine = `${company}-${title}-${period}`;
-    if (!entries.includes(mergedLine)) entries.push(mergedLine);
-  }
-
-  return normalizeWorkHistoryText(entries.join("\n"));
-}
-
-function inferEducationFromExtractedText(text: string): string {
-  const normalized = normalizeResumeText(text).replace(/\s+/g, " ");
-  const educationSectionStart = normalized.search(/教育经历|教育背景/);
-  const educationSectionEnd = normalized.search(/项目经历|技能标签|自我评价|语言能力/);
-  const scope = educationSectionStart >= 0
-    ? normalized.slice(educationSectionStart, educationSectionEnd > educationSectionStart ? educationSectionEnd : undefined)
-    : normalized;
-
-  const entries: string[] = [];
-  const pattern = /([\u4e00-\u9fa5A-Za-z0-9&·()（）]{2,60}?(?:大学|学院|学校))\s*(博士后|博士|硕士研究生|硕士|本科|学士|大专)/g;
-
-  for (const match of scope.matchAll(pattern)) {
-    const school = normalizeResumeText(match[1] || "");
-    const degree = normalizeResumeText(match[2] || "");
-    if (!school || !degree) continue;
-    const line = `${school}-${degree}`;
-    if (!entries.includes(line)) entries.push(line);
-  }
-
-  return normalizeEducationText(entries.join("\n"));
-}
-
-function buildHeuristicParsedResult(text: string, fallbackPosition = ""): ParsedResult | null {
-  const workHistory = inferWorkHistoryFromExtractedText(text);
-  const education = inferEducationFromExtractedText(text);
-
-  if (!workHistory && !education) return null;
-
-  return {
-    interview_date: "",
-    department: "",
-    status: "",
-    nature: "",
-    position: normalizeResumeText(fallbackPosition),
-    age_experience: "",
-    job_level: "",
-    work_history: workHistory,
-    education,
-    interview_comment: "",
-  };
-}
-
-function buildDuplicateMergePatch(
-  existing: ResumeInsert,
-  parsed: ParsedResult | null | undefined,
-): ResumeUpdate {
-  if (!parsed) return {};
-
-  const patch: ResumeUpdate = {};
-  const existingRecord = existing as unknown as Record<string, unknown>;
-  const assignIfBetter = (
-    key: keyof ParsedResult,
-    normalizer?: (value: string) => string,
-    preferIncoming = false,
-  ) => {
-    const incomingRaw = String(parsed[key] || "");
-    const incoming = normalizer ? normalizer(incomingRaw) : normalizeResumeText(incomingRaw);
-    const currentRaw = String(existingRecord[key] || "");
-    const current = normalizer ? normalizer(currentRaw) : normalizeResumeText(currentRaw);
-    if (!incoming) return;
-    if (preferIncoming || !current || incoming.length > current.length) {
-      (patch as Record<string, string>)[key] = incoming;
-    }
-  };
-
-  assignIfBetter("interview_date");
-  assignIfBetter("department");
-  assignIfBetter("status");
-  assignIfBetter("nature");
-  assignIfBetter("position");
-  assignIfBetter("age_experience");
-  assignIfBetter("job_level");
-  assignIfBetter("work_history", normalizeWorkHistoryText, true);
-  assignIfBetter("education", normalizeEducationText, true);
-  assignIfBetter("interview_comment");
-
-  return patch;
-}
-
 export default function UploadPage() {
   const [isDragging, setIsDragging] = useState(false);
   const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
@@ -420,41 +295,10 @@ export default function UploadPage() {
       if (existing) {
         update({ status: "uploading", progress: 30, message: "文件名匹配已有记录，正在补传附件..." });
         const fileUrl = await uploadResumeFile(file);
-        update({ status: "extracting", progress: 65, message: "检测到重复简历，正在更新解析信息..." });
-
-        let parsed: ParsedResult | null = null;
-        if (type === "image") {
-          const resp = await extractResume(fileUrl, file.name, false, undefined, true);
-          parsed = toParsedResult(resp.data as ParsedResult | null | undefined);
-        } else {
-          const text = await extractTextFromFile(file, type);
-          if (!text || text.trim().length === 0) throw new Error("无法从文件中提取文字内容");
-          const resp = await extractResumeFromText(text, file.name, fileUrl, false, undefined, true);
-          const remoteParsed = toParsedResult(resp.data as ParsedResult | null | undefined);
-          const heuristicParsed = buildHeuristicParsedResult(text, remoteParsed?.position || "");
-          parsed = {
-            interview_date: remoteParsed?.interview_date || "",
-            department: remoteParsed?.department || "",
-            status: remoteParsed?.status || "",
-            nature: remoteParsed?.nature || "",
-            position: mergeParsedText(remoteParsed?.position || "", heuristicParsed?.position || ""),
-            age_experience: remoteParsed?.age_experience || "",
-            job_level: remoteParsed?.job_level || "",
-            work_history: mergeParsedText(remoteParsed?.work_history || "", heuristicParsed?.work_history || "", normalizeWorkHistoryText),
-            education: mergeParsedText(remoteParsed?.education || "", heuristicParsed?.education || "", normalizeEducationText),
-            interview_comment: remoteParsed?.interview_comment || "",
-          };
-        }
-
-        const mergePatch = buildDuplicateMergePatch(existing, parsed);
-        await updateResume(existing.id, {
-          ...mergePatch,
-          resume_file_url: fileUrl,
-          resume_file_name: file.name,
-        });
+        await updateResumeFileUrl(existing.id, fileUrl, file.name);
         notifyResumesUpdated();
-        toast.info(`检测到重复简历，附件和解析信息已更新到 ${existing.name} 所在记录`);
-        update({ status: "success", progress: 100, message: "重复简历已合并更新到原记录 ✓" });
+        toast.info(`检测到重复简历，已更新到 ${existing.name} 所在记录`);
+        update({ status: "success", progress: 100, message: "重复简历已更新到原记录 ✓" });
         return true;
       }
 
