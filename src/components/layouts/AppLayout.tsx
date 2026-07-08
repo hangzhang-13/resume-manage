@@ -3,7 +3,7 @@ import { useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
-import { FileUp, Table2, Menu, Sparkles } from "lucide-react";
+import { FileUp, LogOut, Menu, Sparkles, Table2 } from "lucide-react";
 
 const navItems = [
   { hash: "upload-section", label: "简历上传", icon: FileUp },
@@ -41,7 +41,21 @@ function NavContent({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
-export default function AppLayout({ children }: { children: React.ReactNode }) {
+function LogoutButton({ onLogout }: { onLogout: () => void }) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      onClick={onLogout}
+      className="w-full justify-start rounded-xl px-4 py-3 text-xs font-medium text-white/50 hover:bg-white/10 hover:text-white"
+    >
+      <LogOut className="h-4 w-4" />
+      退出登录
+    </Button>
+  );
+}
+
+export default function AppLayout({ children, onLogout }: { children: React.ReactNode; onLogout: () => void }) {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
@@ -53,13 +67,14 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             <Sparkles className="h-5 w-5 text-white" />
           </div>
           <div className="flex flex-col">
-            <span className="font-bold text-white text-sm tracking-wide">简历管理系统</span>
+            <span className="font-bold text-white text-sm tracking-wide">HRBP 面试官简历管理系统</span>
             <span className="text-[10px] text-white/40 font-medium">AI 智能提取</span>
           </div>
         </div>
         <NavContent />
         {/* 底部装饰 */}
         <div className="mt-auto p-4">
+          <LogoutButton onLogout={onLogout} />
           <div className="rounded-xl bg-white/5 p-3 border border-white/5">
             <p className="text-[10px] text-white/40 leading-relaxed">支持图片 / PDF / Word / Excel 格式</p>
           </div>
@@ -81,14 +96,30 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                   <Sparkles className="h-5 w-5 text-white" />
                 </div>
                 <div className="flex flex-col">
-                  <span className="font-bold text-white text-sm tracking-wide">简历管理系统</span>
+                  <span className="font-bold text-white text-sm tracking-wide">HRBP 面试官简历管理系统</span>
                   <span className="text-[10px] text-white/40 font-medium">AI 智能提取</span>
                 </div>
               </div>
               <NavContent onNavigate={() => setMobileOpen(false)} />
+              <div className="mt-auto p-4">
+                <LogoutButton onLogout={() => {
+                  setMobileOpen(false);
+                  onLogout();
+                }} />
+              </div>
             </SheetContent>
           </Sheet>
-          <span className="font-bold text-foreground">简历管理系统</span>
+          <span className="font-bold text-foreground">HRBP 面试官简历管理系统</span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={onLogout}
+            className="ml-auto rounded-xl text-xs text-muted-foreground hover:text-foreground"
+          >
+            <LogOut className="h-4 w-4" />
+            退出
+          </Button>
         </header>
 
         <main className="relative flex-1 overflow-x-hidden p-2 md:p-4">
