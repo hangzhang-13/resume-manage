@@ -7,7 +7,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { Upload, CheckCircle2, AlertCircle, Loader2, ArrowRight, Sparkles, Star } from "lucide-react";
 import { createResume, extractResume, extractResumeFromText, findResumeByFileName, updateResume, updateResumeFileUrl, uploadResumeFile } from "@/services/api";
 import { cn } from "@/lib/utils";
-import * as XLSX from "xlsx";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { getResumeFileType, RESUME_FILE_ACCEPT } from "@/lib/resume-files";
 import { notifyResumesUpdated } from "@/lib/resume-events";
@@ -87,6 +86,10 @@ const FILE_FORMAT_LABELS = [
   { label: "表格", types: "XLS / XLSX" },
 ];
 
+function getExcelRowValues(row: { values: unknown }): unknown[] {
+  return Array.isArray(row.values) ? row.values.slice(1) : [];
+}
+
 async function extractTextFromPdf(file: File): Promise<string> {
   const pdfjs = await import("pdfjs-dist");
   pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -121,45 +124,53 @@ async function extractTextFromDoc(file: File): Promise<string> {
 }
 
 async function extractTextFromExcel(file: File): Promise<string> {
+  const { default: ExcelJS } = await import("exceljs");
   const arrayBuffer = await file.arrayBuffer();
-  const workbook = XLSX.read(arrayBuffer, { type: "array" });
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(arrayBuffer);
   let text = "";
 
-  workbook.SheetNames.forEach((sheetName) => {
-    const worksheet = workbook.Sheets[sheetName];
-    const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as unknown[][];
-    text += jsonData.map((row) => row.join("\t")).join("\n") + "\n";
+  workbook.eachSheet((worksheet) => {
+    const rows: string[][] = [];
+    worksheet.eachRow({ includeEmpty: false }, (row) => {
+      rows.push(getExcelRowValues(row).map((value) => String(value ?? "")));
+    });
+    text += `${rows.map((row) => row.join("\t")).join("\n")}\n`;
   });
 
   return text.trim();
 }
 
 async function parseExcelRows(file: File): Promise<ResumeInsert[]> {
+  const { default: ExcelJS } = await import("exceljs");
   const arrayBuffer = await file.arrayBuffer();
-  const workbook = XLSX.read(arrayBuffer, { type: "array" });
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(arrayBuffer);
   const rows: ResumeInsert[] = [];
 
-  workbook.SheetNames.forEach((sheetName) => {
-    const worksheet = workbook.Sheets[sheetName];
-    const jsonRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(worksheet, { defval: "" });
+  workbook.eachSheet((worksheet) => {
+    const headers = getExcelRowValues(worksheet.getRow(1)).map((value) => String(value ?? "").trim());
 
-    jsonRows.forEach((row) => {
-      const name = normalizeResumeText(String(row["姓名"] || row["name"] || ""));
+    worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+      if (rowNumber === 1) return;
+      const cells = getExcelRowValues(row);
+      const data = Object.fromEntries(headers.map((header, index) => [header, cells[index] ?? ""]));
+      const name = normalizeResumeText(String(data["姓名"] || data["name"] || ""));
       if (!name) return;
 
       rows.push({
-        interview_date: normalizeResumeText(String(row["面试时间"] || row["interview_date"] || "")),
-        department: normalizeResumeText(String(row["用人部门"] || row["department"] || "")),
-        hiring_manager: normalizeResumeText(String(row["用人经理"] || row["hiring_manager"] || "")),
+        interview_date: normalizeResumeText(String(data["面试时间"] || data["interview_date"] || "")),
+        department: normalizeResumeText(String(data["用人部门"] || data["department"] || "")),
+        hiring_manager: normalizeResumeText(String(data["用人经理"] || data["hiring_manager"] || "")),
         name,
-        status: normalizeResumeText(String(row["状态"] || row["status"] || "")),
-        nature: normalizeResumeText(String(row["性质"] || row["nature"] || "")),
-        position: normalizeResumeText(String(row["职位"] || row["position"] || "")),
-        age_experience: normalizeResumeText(String(row["年龄/工作经验"] || row["age_experience"] || "")),
-        job_level: normalizeResumeText(String(row["职级"] || row["job_level"] || "")),
-        work_history: normalizeWorkHistoryText(String(row["工作履历"] || row["work_history"] || "")),
-        education: normalizeEducationText(String(row["学历"] || row["education"] || "")),
-        interview_comment: normalizeResumeText(String(row["面评"] || row["interview_comment"] || "")),
+        status: normalizeResumeText(String(data["状态"] || data["status"] || "")),
+        nature: normalizeResumeText(String(data["性质"] || data["nature"] || "")),
+        position: normalizeResumeText(String(data["职位"] || data["position"] || "")),
+        age_experience: normalizeResumeText(String(data["年龄/工作经验"] || data["age_experience"] || "")),
+        job_level: normalizeResumeText(String(data["职级"] || data["job_level"] || "")),
+        work_history: normalizeWorkHistoryText(String(data["工作履历"] || data["work_history"] || "")),
+        education: normalizeEducationText(String(data["学历"] || data["education"] || "")),
+        interview_comment: normalizeResumeText(String(data["面评"] || data["interview_comment"] || "")),
         resume_file_name: file.name,
       });
     });
@@ -537,7 +548,11 @@ export default function UploadPage() {
               </div>
             </div>
 
-            <Button type="button" className="rounded-2xl bg-gradient-primary px-6 text-slate-700 shadow-lg shadow-cyan-500/25 hover:shadow-xl hover:shadow-cyan-500/30">
+            <Button
+              type="button"
+              onClick={() => document.getElementById("file-input")?.click()}
+              className="rounded-2xl bg-gradient-primary px-6 text-slate-700 shadow-lg shadow-cyan-500/25 hover:shadow-xl hover:shadow-cyan-500/30"
+            >
               选择文件
               <ArrowRight className="ml-2 h-4 w-4" />
             </Button>
@@ -577,13 +592,13 @@ export default function UploadPage() {
                   )}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-2 mb-1">
-                    <p className="text-sm font-medium text-foreground truncate">{item.file.name}</p>
-                    <span className={cn(
-                      "text-xs shrink-0",
+                  <div className="mb-1 min-w-0">
+                    <p className="truncate text-sm font-medium text-foreground" title={item.file.name}>{item.file.name}</p>
+                    <p className={cn(
+                      "mt-0.5 break-words text-xs",
                       item.status === "success" ? "text-emerald-600" :
                         item.status === "error" ? "text-red-500" : "text-muted-foreground"
-                    )}>{item.message}</span>
+                    )}>{item.message}</p>
                   </div>
                   {(item.status === "uploading" || item.status === "extracting") && (
                     <div className="relative h-1.5 rounded-full bg-cyan-100 overflow-hidden">
