@@ -53,6 +53,7 @@ function splitByCommonDelimiters(text: string): string {
 
 function normalizeWorkHistoryText(text: string): string {
   return splitByCommonDelimiters(normalizeResumeText(text))
+    .replace(/(?:Baidu|百度)\s*招聘专用/gi, "")
     .replace(/(\d{4}[\./]\d{1,2}\s*[-–—~]?\s*(?:至今|\d{4}[\./]\d{1,2}))(?=[^\s\d])/g, "$1\n")
     .replace(/(\d{4}年\d{1,2}月\s*[-–—~]?\s*(?:至今|\d{4}年\d{1,2}月))(?=[^\s\d])/g, "$1\n")
     .replace(/(\d{4}\s*[-–—~]?\s*(?:至今|\d{4}))(?=[^\s\d])/g, "$1\n")
@@ -82,8 +83,8 @@ serve(async (req: Request): Promise<Response> => {
     return new Response("Method Not Allowed", { status: 405, headers: corsHeaders });
   }
 
-  const apiKey = Deno.env.get("INTEGRATIONS_API_KEY");
-  if (!apiKey) {
+  const deepSeekApiKey = Deno.env.get("DEEPSEEK_API_KEY");
+  if (!deepSeekApiKey) {
     return new Response(JSON.stringify({ error: "Server configuration error" }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -95,6 +96,7 @@ serve(async (req: Request): Promise<Response> => {
   let text: string | undefined;
   let force: boolean;
   let duplicateData: ResumeData | undefined;
+  let targetId: string | undefined;
 
   try {
     const body = await req.json();
@@ -103,6 +105,7 @@ serve(async (req: Request): Promise<Response> => {
     text = body.text;
     force = body.force === true;
     duplicateData = body.duplicate_data;
+    targetId = body.target_id;
     if (!fileUrl && !text) throw new Error("Missing file_url or text");
   } catch {
     return new Response(JSON.stringify({ error: "Invalid request body" }), {
@@ -114,6 +117,24 @@ serve(async (req: Request): Promise<Response> => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
   const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const accessToken = req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "");
+
+  if (!accessToken) {
+    return new Response(JSON.stringify({ error: "请先登录后再识别简历" }), {
+      status: 401,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  // 使用 Auth 服务校验调用者身份；不要信任浏览器传来的用户编号。
+  const { data: authData, error: authError } = await supabase.auth.getUser(accessToken);
+  if (authError || !authData.user) {
+    return new Response(JSON.stringify({ error: "登录已失效，请重新登录后再试" }), {
+      status: 401,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+  const ownerId = authData.user.id;
 
   try {
     let resumeData: ResumeData;
@@ -141,11 +162,7 @@ serve(async (req: Request): Promise<Response> => {
           }
           const imageBase64 = btoa(binary);
 
-          const ocrResult = await callOcr(apiKey, imageBase64);
-          if (ocrResult.error_code !== 0) {
-            throw new Error(`OCR error: ${ocrResult.error_msg}`);
-          }
-          extractText = cleanText(ocrResult.words_result?.map((w) => w.words).join("\n") || "");
+          throw new Error("图片简历暂不支持自动识别，请上传可复制文字的 PDF 或 Word 简历");
         } else {
           extractText = `[文件: ${fileName}]`;
         }
@@ -155,15 +172,33 @@ serve(async (req: Request): Promise<Response> => {
         throw new Error("无法从文件中提取文字内容");
       }
 
-      resumeData = await extractResumeInfo(apiKey, extractText);
+      resumeData = await extractResumeInfo(deepSeekApiKey, extractText);
+    }
+
+    // 同名文件重新上传时，只更新原记录，确保仍能弹出人工确认窗口。
+    if (targetId) {
+      resumeData.interview_date = normalizeDate(resumeData.interview_date);
+      const { data: updatedData, error: updateError } = await supabase
+        .from("resumes")
+        .update({ ...resumeData, resume_file_url: fileUrl || "", resume_file_name: fileName })
+        .eq("id", targetId)
+        .eq("owner_id", ownerId)
+        .select()
+        .single();
+      if (updateError) throw new Error(`Database update error: ${updateError.message}`);
+      return new Response(JSON.stringify({ success: true, data: updatedData }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     // 检查是否重复（如果不是 force 模式）
     if (!force && resumeData.name && resumeData.name !== "提取失败" && resumeData.name !== "未知") {
-      const { data: existing, error: checkError } = await supabase
-        .from("resumes")
-        .select("*")
-        .ilike("name", resumeData.name)
+        const { data: existing, error: checkError } = await supabase
+          .from("resumes")
+          .select("*")
+          .eq("owner_id", ownerId)
+          .ilike("name", resumeData.name)
         .limit(1);
 
       if (checkError) throw new Error(`Database check error: ${checkError.message}`);
@@ -174,6 +209,7 @@ serve(async (req: Request): Promise<Response> => {
           .from("resumes")
           .update(mergedResume)
           .eq("id", existing[0].id)
+          .eq("owner_id", ownerId)
           .select()
           .single();
 
@@ -201,6 +237,7 @@ serve(async (req: Request): Promise<Response> => {
       .from("resumes")
       .insert({
         ...resumeData,
+        owner_id: ownerId,
         resume_file_url: fileUrl || "",
         resume_file_name: fileName,
       })
@@ -251,22 +288,6 @@ async function downloadResumeFile(
     blob: data,
     contentType: data.type || "",
   };
-}
-
-async function callOcr(apiKey: string, imageBase64: string): Promise<OcrResult> {
-  const params = new URLSearchParams({ image: imageBase64, language_type: "CHN_ENG" });
-  const response = await fetch(
-    "https://app-cjf7826emyv5-api-eLMlJ2jB44g9-gateway.appmiaoda.com/rest/2.0/ocr/v1/accurate_basic",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "X-Gateway-Authorization": `Bearer ${apiKey}`,
-      },
-      body: params.toString(),
-    }
-  );
-  return await response.json();
 }
 
 // 清除文本中的噪声空格，避免姓名、公司名、年限等字段被拆开。
@@ -355,7 +376,9 @@ function inferNature(workHistory: string): string {
   // - 曾经在百度工作过，但最近不在百度 → 回流
   // - 从未在百度工作过 → 社招
   if (!workHistory) return "社招";
-  const lines = workHistory.split(/\\n|\n|\r\n/).map((l) => l.trim()).filter(Boolean);
+  const lines = workHistory.split(/\\n|\n|\r\n/)
+    .map((l) => l.trim())
+    .filter((line) => line && !/(?:Baidu|百度)\s*招聘专用/i.test(line));
   if (lines.length === 0) return "社招";
 
   const companyNames = lines.map((line) => {
@@ -372,7 +395,7 @@ function inferNature(workHistory: string): string {
   return "社招";
 }
 
-async function extractResumeInfo(apiKey: string, ocrText: string): Promise<ResumeData> {
+async function extractResumeInfo(apiKey: string, resumeText: string): Promise<ResumeData> {
   const prompt = `你是一个简历信息提取助手。请从以下简历文本中提取关键信息，并严格按照 JSON 格式返回。
 
 格式要求：
@@ -400,51 +423,33 @@ async function extractResumeInfo(apiKey: string, ocrText: string): Promise<Resum
 - interview_comment: 面评（如果没有返回空字符串）
 
 简历文本：
-${ocrText}
+${resumeText}
 
 请只返回 JSON 对象，不要包含其他内容。`;
 
-  const response = await fetch(
-    "https://app-cjf7826emyv5-api-zYkZz8qovQ1L-gateway.appmiaoda.com/v2/chat/completions",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Gateway-Authorization": `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        messages: [{ role: "user", content: prompt }],
-      }),
-    }
-  );
+  const response = await fetch("https://api.deepseek.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: "deepseek-v4-flash",
+      messages: [{ role: "user", content: prompt }],
+      response_format: { type: "json_object" },
+      thinking: { type: "disabled" },
+      temperature: 0.1,
+      max_tokens: 3000,
+      stream: false,
+    }),
+  });
 
   if (!response.ok) {
     throw new Error(`LLM API error: ${response.status}`);
   }
 
-  const reader = response.body!.getReader();
-  const decoder = new TextDecoder("utf8");
-  let fullContent = "";
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      if (!line.startsWith("data: ")) continue;
-      const raw = line.slice(6).trim();
-      if (raw === "[DONE]") break;
-      try {
-        const chunk = JSON.parse(raw);
-        fullContent += chunk.choices?.[0]?.delta?.content ?? "";
-      } catch {
-        // 跳过
-      }
-    }
-  }
+  const completion = await response.json();
+  const fullContent = completion.choices?.[0]?.message?.content || "";
 
   // 解析 JSON
   let result: ResumeData;
@@ -493,11 +498,8 @@ ${ocrText}
   }
 
   // 自动推断 nature（性质）
-  if (!result.nature && result.work_history) {
-    result.nature = inferNature(result.work_history);
-  } else if (!result.nature) {
-    result.nature = "社招";
-  }
+  // 性质属于规则字段，始终以真实工作经历为准，不采信模型对水印的猜测。
+  result.nature = inferNature(result.work_history);
 
   return result;
 }

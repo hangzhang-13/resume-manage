@@ -109,11 +109,60 @@ async function extractTextFromPdf(file: File): Promise<string> {
         .filter(Boolean)
         .join(" ") + "\n";
     }
+    const cleanedText = removePdfWatermarks(text);
+    if (hasUsableResumeText(cleanedText)) return cleanedText;
+
+    // 扫描版 PDF 没有文字层：逐页渲染后交给本地 OCR。
+    const pages: Blob[] = [];
+    for (let pageIndex = 1; pageIndex <= pdf.numPages; pageIndex += 1) {
+      const page = await pdf.getPage(pageIndex);
+      const viewport = page.getViewport({ scale: 2 });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("无法准备 PDF 的 OCR 识别画布");
+      await page.render({ canvasContext: context, viewport }).promise;
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+      if (blob) pages.push(blob);
+    }
+    return extractTextFromImages(pages);
   } finally {
     await pdf.cleanup();
   }
+}
 
-  return text.trim();
+function removePdfWatermarks(text: string): string {
+  return text
+    .replace(/(?:Baidu|百度)\s*招聘专用/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function hasUsableResumeText(text: string): boolean {
+  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  const uniqueLines = new Set(lines);
+  const chineseCharacters = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+  const wordLikeTokens = text.match(/[A-Za-z0-9][A-Za-z0-9_./@:+-]*/g) || [];
+  // 部分 PDF 把水印作为唯一“文字层”导出；同一串编码反复出现不应阻止 OCR。
+  return (chineseCharacters >= 20 || wordLikeTokens.length >= 20) && uniqueLines.size >= 3;
+}
+
+async function extractTextFromImages(images: Blob[]): Promise<string> {
+  const { createWorker } = await import("tesseract.js");
+  const worker = await createWorker("chi_sim+eng", 1);
+  try {
+    const chunks: string[] = [];
+    for (const image of images) {
+      const result = await worker.recognize(image);
+      if (result.data.text.trim()) chunks.push(result.data.text);
+    }
+    const text = removePdfWatermarks(chunks.join("\n"));
+    if (!text) throw new Error("未能从图片中识别到文字，请确认图片清晰、文字朝向正常");
+    return text;
+  } finally {
+    await worker.terminate();
+  }
 }
 
 async function extractTextFromDoc(file: File): Promise<string> {
@@ -189,6 +238,7 @@ async function extractTextFromHtml(file: File): Promise<string> {
 async function extractTextFromFile(file: File, fileType: string): Promise<string> {
   let text = "";
   if (fileType === "pdf") text = await extractTextFromPdf(file);
+  else if (fileType === "image") text = await extractTextFromImages([file]);
   else if (fileType === "doc" || fileType === "docx") text = await extractTextFromDoc(file);
   else if (fileType === "xls" || fileType === "xlsx") text = await extractTextFromExcel(file);
   else if (fileType === "html") text = await extractTextFromHtml(file);
@@ -303,16 +353,6 @@ export default function UploadPage() {
 
     try {
       const existing = await findResumeByFileName(file.name);
-      if (existing) {
-        update({ status: "uploading", progress: 30, message: "文件名匹配已有记录，正在补传附件..." });
-        const fileUrl = await uploadResumeFile(file);
-        await updateResumeFileUrl(existing.id, fileUrl, file.name);
-        notifyResumesUpdated();
-        toast.info(`检测到重复简历，已更新到 ${existing.name} 所在记录`);
-        update({ status: "success", progress: 100, message: "重复简历已更新到原记录 ✓" });
-        return true;
-      }
-
       if (type === "xls" || type === "xlsx") {
         update({ status: "extracting", progress: 20, message: "正在解析 Excel..." });
         const rows = await parseExcelRows(file);
@@ -341,28 +381,13 @@ export default function UploadPage() {
         return true;
       }
 
-      update({ status: type === "image" ? "uploading" : "extracting", progress: 30, message: type === "image" ? "正在上传..." : "正在解析文件内容..." });
+      update({ status: type === "image" ? "uploading" : "extracting", progress: 30, message: existing ? "检测到同名文件，正在重新解析..." : type === "image" ? "正在上传..." : "正在解析文件内容..." });
       const fileUrl = await uploadResumeFile(file);
-
-      if (type === "image") {
-        update({ status: "extracting", progress: 70, message: "AI 正在分析简历..." });
-        const resp = await extractResume(fileUrl, file.name);
-        if (resp.merged && resp.name) {
-          notifyResumesUpdated();
-          toast.info(`检测到重复简历，已自动合并并更新到 ${resp.name} 所在记录`);
-          update({ status: "success", progress: 100, message: "重复简历已自动更新到原记录 ✓" });
-          return true;
-        }
-        openConfirmDialog(resp.data?.id, file.name, toParsedResult(resp.data));
-        notifyResumesUpdated();
-        update({ status: "success", progress: 100, message: "提取完成，等待确认 ✓" });
-        return true;
-      }
-
+      if (type === "image") update({ status: "extracting", progress: 55, message: "正在进行本地 OCR 文字识别..." });
       const text = await extractTextFromFile(file, type);
       if (!text || text.trim().length === 0) throw new Error("无法从文件中提取文字内容");
       update({ progress: 80, message: "AI 正在分析简历..." });
-      const resp = await extractResumeFromText(text, file.name, fileUrl);
+      const resp = await extractResumeFromText(text, file.name, fileUrl, false, undefined, existing?.id);
       if (resp.merged && resp.name) {
         notifyResumesUpdated();
         toast.info(`检测到重复简历，已自动合并并更新到 ${resp.name} 所在记录`);
