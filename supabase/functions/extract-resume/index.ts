@@ -180,7 +180,7 @@ serve(async (req: Request): Promise<Response> => {
       resumeData.interview_date = normalizeDate(resumeData.interview_date);
       const { data: updatedData, error: updateError } = await supabase
         .from("resumes")
-        .update({ ...resumeData, resume_file_url: fileUrl || "", resume_file_name: fileName })
+        .update({ ...resumeData, resume_file_url: fileUrl || "", resume_file_name: fileName, uploaded_at: new Date().toISOString() })
         .eq("id", targetId)
         .eq("owner_id", ownerId)
         .select()
@@ -238,6 +238,7 @@ serve(async (req: Request): Promise<Response> => {
       .insert({
         ...resumeData,
         owner_id: ownerId,
+        uploaded_at: new Date().toISOString(),
         resume_file_url: fileUrl || "",
         resume_file_name: fileName,
       })

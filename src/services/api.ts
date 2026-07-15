@@ -53,6 +53,7 @@ export async function fetchResumes(): Promise<Resume[]> {
   const { data, error } = await supabase
     .from("resumes")
     .select("*")
+    .order("uploaded_at", { ascending: false })
     .order("created_at", { ascending: false });
 
   if (error) throw error;
@@ -131,7 +132,7 @@ export async function getResumeFileDownloadUrl(fileReference?: string): Promise<
 export async function updateResumeFileUrl(id: string, fileUrl: string, fileName: string): Promise<void> {
   const { error } = await supabase
     .from("resumes")
-    .update({ resume_file_url: fileUrl, resume_file_name: fileName })
+    .update({ resume_file_url: fileUrl, resume_file_name: fileName, uploaded_at: new Date().toISOString() })
     .eq("id", id);
 
   if (error) throw error;
