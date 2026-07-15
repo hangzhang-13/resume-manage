@@ -4,7 +4,7 @@ import type { Resume, ResumeInsert, ResumeUpdate } from "@/types/types";
 // 数据库实际存在的列（新增列后在此处加入即可生效）
 const DB_COLUMNS = new Set([
   "interview_date", "department", "hiring_manager", "name", "status", "nature",
-  "position", "age_experience", "job_level", "work_history", "education",
+  "hiring_manager", "position", "age_experience", "job_level", "work_history", "education",
   "interview_comment", "resume_file_url", "resume_file_name",
 ]);
 
@@ -13,10 +13,11 @@ async function safeUpsert(
   table: string,
   id: string | null,
   payload: Record<string, unknown>,
+  preserveEmptyValues = false,
 ): Promise<{ data: unknown; error: unknown }> {
   const filtered: Record<string, unknown> = {};
   for (const key of Object.keys(payload)) {
-    if (payload[key] !== undefined && payload[key] !== null && String(payload[key]).trim() !== "") {
+    if (payload[key] !== undefined && payload[key] !== null && (preserveEmptyValues || String(payload[key]).trim() !== "")) {
       filtered[key] = payload[key];
     }
   }
@@ -62,7 +63,7 @@ export async function fetchResumes(): Promise<Resume[]> {
 
 // 更新简历信息
 export async function updateResume(id: string, updates: ResumeUpdate): Promise<void> {
-  const { error } = await safeUpsert("resumes", id, updates as Record<string, unknown>);
+  const { error } = await safeUpsert("resumes", id, updates as Record<string, unknown>, true);
   if (error) throw error;
 }
 
