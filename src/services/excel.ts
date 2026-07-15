@@ -1,11 +1,11 @@
-import * as XLSX from "xlsx";
 import { saveAs } from "file-saver";
 import type { Resume } from "@/types/types";
 import { RESUME_COLUMNS } from "@/types/types";
 import { normalizeResumeText } from "@/lib/resume-text";
 import { extractCompetitorTags } from "@/lib/resume-competitors";
 
-export function exportToExcel(resumes: Resume[], filename = "面试简历管理表") {
+export async function exportToExcel(resumes: Resume[], filename = "面试简历管理表") {
+  const { default: ExcelJS } = await import("exceljs");
   const headers = RESUME_COLUMNS.map((col) => col.label);
 
   const rows = resumes.map((r) =>
@@ -23,18 +23,14 @@ export function exportToExcel(resumes: Resume[], filename = "面试简历管理�
     })
   );
 
-  const wsData = [headers, ...rows];
-  const ws = XLSX.utils.aoa_to_sheet(wsData);
-
-  // 设置列宽
-  ws["!cols"] = RESUME_COLUMNS.map((col) => ({
-    wch: col.excelWidth,
-  }));
-
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "简历管理");
-
-  const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-  const blob = new Blob([wbout], { type: "application/octet-stream" });
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet("简历管理");
+  worksheet.columns = RESUME_COLUMNS.map((column) => ({ width: column.excelWidth }));
+  worksheet.addRow(headers);
+  rows.forEach((row) => worksheet.addRow(row));
+  const workbookData = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([workbookData], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
   saveAs(blob, `${filename}.xlsx`);
 }
