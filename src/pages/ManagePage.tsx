@@ -34,6 +34,9 @@ const defaultCandidateForm: ResumeInsert = {
   resume_file_name: "",
 };
 
+const NON_EDITABLE_COLUMNS = new Set(["resume_file_name", "competitor_tags", "priority_flag"]);
+const isEditableColumn = (key: string) => !NON_EDITABLE_COLUMNS.has(key);
+
 export default function ManagePage() {
   const [resumes, setResumes] = useState<Resume[]>([]);
   const [loading, setLoading] = useState(true);
@@ -76,7 +79,7 @@ export default function ManagePage() {
   }, [loadResumes]);
 
   const handleCellClick = (id: string, key: string, value: string) => {
-    if (key === "resume_file_name" || key === "competitor_tags" || key === "priority_flag") return;
+    if (!isEditableColumn(key)) return;
     setEditingCell({ id, key });
     // 工作履历和学历进入编辑时，使用格式化后的带序号文本
     if (key === "work_history") {
@@ -119,6 +122,7 @@ export default function ManagePage() {
     try {
       await updateResume(id, { [key]: saveValue });
       setResumes((prev) => prev.map((resume) => (resume.id === id ? { ...resume, [key]: saveValue } : resume)));
+      notifyResumesUpdated();
       toast.success("已保存");
     } catch {
       toast.error("保存失败");
@@ -207,13 +211,17 @@ export default function ManagePage() {
     }
   };
 
-  const handleExport = () => {
+  const handleExport = async () => {
     if (resumes.length === 0) {
       toast.error("暂无数据可导出");
       return;
     }
-    exportToExcel(resumes);
-    toast.success("导出成功");
+    try {
+      await exportToExcel(resumes);
+      toast.success("导出成功");
+    } catch {
+      toast.error("导出失败");
+    }
   };
 
   const renderMultiLine = (text: string, numbered = false) => {
@@ -323,6 +331,7 @@ export default function ManagePage() {
       setResumes((prev) =>
         prev.map((item) => (item.id === resume.id ? { ...item, interview_comment: nextComment } : item))
       );
+      notifyResumesUpdated();
       toast.success(nextPriority ? "已标记高优关注" : "已取消高优关注");
     } catch {
       toast.error("高优标记更新失败");
