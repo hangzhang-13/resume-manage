@@ -33,12 +33,14 @@ interface UploadNotes {
 }
 
 interface EditableParsed {
+  name: string;
   position: string;
   work_history: string;
   education: string;
 }
 
 interface ParsedResult {
+  name: string;
   interview_date: string;
   department: string;
   status: string;
@@ -70,6 +72,7 @@ const defaultUploadNotes: UploadNotes = {
 };
 
 const defaultEditableParsed: EditableParsed = {
+  name: "",
   position: "",
   work_history: "",
   education: "",
@@ -116,14 +119,15 @@ async function extractTextFromPdf(file: File): Promise<string> {
     const pages: Blob[] = [];
     for (let pageIndex = 1; pageIndex <= pdf.numPages; pageIndex += 1) {
       const page = await pdf.getPage(pageIndex);
-      const viewport = page.getViewport({ scale: 2 });
+      // OCR 以适合简历文字的清晰度渲染，避免高分辨率导致等待过长。
+      const viewport = page.getViewport({ scale: 1.4 });
       const canvas = document.createElement("canvas");
       canvas.width = Math.ceil(viewport.width);
       canvas.height = Math.ceil(viewport.height);
       const context = canvas.getContext("2d");
       if (!context) throw new Error("无法准备 PDF 的 OCR 识别画布");
       await page.render({ canvasContext: context, viewport }).promise;
-      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.86));
       if (blob) pages.push(blob);
     }
     return extractTextFromImages(pages);
@@ -250,16 +254,6 @@ function cleanText(text: string): string {
   return normalizeResumeText(text);
 }
 
-function inferDepartmentFromFileName(fileName: string): string {
-  const normalizedFileName = normalizeResumeText(fileName)
-    .replace(/\.(pdf|doc|docx|xls|xlsx|png|jpg|jpeg|bmp|webp|html|htm)$/i, "");
-  const parts = normalizedFileName.split("-");
-  if (parts.length >= 3) {
-    return normalizeResumeText(parts.slice(2).join("-"));
-  }
-  return "";
-}
-
 /** 将多行文本格式化为带序号的列表（每行前加 "1. "、"2. "...） */
 function formatAsList(text: string): string {
   if (!text) return "";
@@ -271,6 +265,7 @@ function formatAsList(text: string): string {
 function toParsedResult(data: ParsedResult | null | undefined): ParsedResult | null {
   if (!data) return null;
   return {
+    name: String(data.name || ""),
     interview_date: String(data.interview_date || ""),
     department: String(data.department || ""),
     status: String(data.status || ""),
@@ -292,7 +287,7 @@ export default function UploadPage() {
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(defaultConfirmDialogState);
 
   const buildManualResumePatch = useCallback((): ResumeUpdate => {
-    const patch: ResumeUpdate = {};
+    const patch: ResumeUpdate = { department: "" };
     if (uploadNotes.interview_date.trim()) patch.interview_date = uploadNotes.interview_date.trim();
     if (uploadNotes.department.trim()) {
       // "其他:部门名" 只保存冒号后的部门名
@@ -331,6 +326,7 @@ export default function UploadPage() {
     });
 
     setEditableParsed({
+      name: parsed?.name || "",
       position: parsed?.position || "",
       work_history: formatAsList(normalizeWorkHistoryText(parsed?.work_history || "")),
       education: formatAsList(normalizeEducationText(parsed?.education || "")),
@@ -338,7 +334,8 @@ export default function UploadPage() {
 
     setUploadNotes((prev) => ({
       ...prev,
-      department: prev.department || inferDepartmentFromFileName(fileName) || parsed?.department || "",
+      // 用人部门只由招聘方在确认页选择，不从文件名或原始简历猜测。
+      department: prev.department,
       interview_date: prev.interview_date || parsed?.interview_date || "",
       job_level_type: prev.job_level_type || "",
       job_level_number: prev.job_level_number || "",
@@ -466,6 +463,7 @@ export default function UploadPage() {
 
     try {
       const patch = buildManualResumePatch();
+      if (editableParsed.name.trim()) patch.name = normalizeResumeText(editableParsed.name);
       // 合入用户编辑过的解析字段（保存时去掉列表序号前缀）
       if (editableParsed.position.trim()) {
         // "其他:xxx" 格式只保存冒号后的内容
@@ -672,6 +670,15 @@ export default function UploadPage() {
                 <div className="rounded-2xl border border-cyan-100/70 bg-white/75 p-3 sm:col-span-2">
                   <div className="text-xs font-semibold text-muted-foreground">文件名</div>
                   <div className="mt-1 text-sm text-foreground break-words">{confirmDialog.fileName || "-"}</div>
+                </div>
+                <div className="rounded-2xl border border-cyan-100/70 bg-white/75 p-3 sm:col-span-2">
+                  <div className="text-xs font-semibold text-muted-foreground">姓名</div>
+                  <Input
+                    value={editableParsed.name}
+                    onChange={(e) => setEditableParsed((prev) => ({ ...prev, name: e.target.value }))}
+                    placeholder="核对或填写候选人姓名"
+                    className="mt-1 h-9 rounded-xl bg-white/80 text-sm"
+                  />
                 </div>
                 <div className="rounded-2xl border border-cyan-100/70 bg-white/75 p-3 sm:col-span-2">
                   <div className="text-xs font-semibold text-muted-foreground">工作履历</div>

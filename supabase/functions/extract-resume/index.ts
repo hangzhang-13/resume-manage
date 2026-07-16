@@ -175,6 +175,9 @@ serve(async (req: Request): Promise<Response> => {
       resumeData = await extractResumeInfo(deepSeekApiKey, extractText);
     }
 
+    // 用人部门属于招聘方补充信息，不能从简历正文或文件名推断。
+    resumeData.department = "";
+
     // 同名文件重新上传时，只更新原记录，确保仍能弹出人工确认窗口。
     if (targetId) {
       resumeData.interview_date = normalizeDate(resumeData.interview_date);
