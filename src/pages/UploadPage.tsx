@@ -254,6 +254,13 @@ function cleanText(text: string): string {
   return normalizeResumeText(text);
 }
 
+function inferCandidateNameFromFileName(fileName: string): string {
+  const baseName = fileName.replace(/\.[^.]+$/, "");
+  // 标准命名如“C03352561-裴沛东-原始简历 (1).pdf”中的姓名可信度高于图片 OCR。
+  const match = baseName.match(/(?:^|[-_])(?:C\d+[-_])?([\u4e00-\u9fff]{2,5})(?=[-_](?:原始)?简历)/);
+  return match?.[1] || "";
+}
+
 /** 将多行文本格式化为带序号的列表（每行前加 "1. "、"2. "...） */
 function formatAsList(text: string): string {
   if (!text) return "";
@@ -318,6 +325,7 @@ export default function UploadPage() {
   }, [uploadNotes]);
 
   const openConfirmDialog = useCallback((resumeId: string | undefined, fileName: string, parsed: ParsedResult | null) => {
+    const fileNameCandidate = inferCandidateNameFromFileName(fileName);
     setConfirmDialog({
       open: true,
       resumeId,
@@ -326,7 +334,7 @@ export default function UploadPage() {
     });
 
     setEditableParsed({
-      name: parsed?.name || "",
+      name: fileNameCandidate || parsed?.name || "",
       position: parsed?.position || "",
       work_history: formatAsList(normalizeWorkHistoryText(parsed?.work_history || "")),
       education: formatAsList(normalizeEducationText(parsed?.education || "")),
