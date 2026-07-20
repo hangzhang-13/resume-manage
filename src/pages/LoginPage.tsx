@@ -25,10 +25,6 @@ export default function LoginPage() {
     event.preventDefault();
     setMessage("");
     if (!validateEmail()) return;
-    if (password.length < 8) {
-      setMessage("密码至少需要 8 位。");
-      return;
-    }
 
     setIsSubmitting(true);
     try {
