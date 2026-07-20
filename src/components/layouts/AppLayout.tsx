@@ -15,7 +15,7 @@ const navItems = [
   { hash: "manage-section", label: "简历管理", icon: Table2 },
 ];
 
-function NavContent({ onNavigate }: { onNavigate?: () => void }) {
+function NavContent({ onNavigate, onLogout, onPasswordChanged }: { onNavigate?: () => void; onLogout: () => void; onPasswordChanged?: () => void }) {
   const location = useLocation();
 
   return (
@@ -42,6 +42,15 @@ function NavContent({ onNavigate }: { onNavigate?: () => void }) {
           </a>
         );
       })}
+      <div className="my-1 border-t border-white/10" />
+      <ChangePasswordButton
+        onComplete={onPasswordChanged}
+        className="w-full justify-start px-4 py-3 text-sm font-medium text-white/60 hover:bg-white/10 hover:text-white"
+      />
+      <LogoutButton
+        onLogout={onLogout}
+        className="w-full justify-start px-4 py-3 text-sm font-medium text-white/60 hover:bg-white/10 hover:text-white"
+      />
     </nav>
   );
 }
@@ -175,7 +184,7 @@ export default function AppLayout({ children, onLogout }: { children: React.Reac
             <span className="text-[10px] text-white/40 font-medium">AI 智能提取</span>
           </div>
         </div>
-        <NavContent />
+        <NavContent onLogout={onLogout} />
         {/* 底部装饰 */}
         <div className="mt-auto p-4">
           <div className="rounded-xl bg-white/5 p-3 border border-white/5">
@@ -186,7 +195,7 @@ export default function AppLayout({ children, onLogout }: { children: React.Reac
 
       {/* 移动端头部 + Sheet */}
       <div className="flex-1 min-w-0 flex flex-col">
-        <header className="flex items-center gap-3 bg-white/70 backdrop-blur-2xl border-b border-cyan-100/80 px-4 py-3">
+        <header className="lg:hidden flex items-center gap-3 bg-white/70 backdrop-blur-2xl border-b border-cyan-100/80 px-4 py-3">
           <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
             <SheetTrigger asChild>
               <Button variant="ghost" size="icon" className="shrink-0 text-foreground lg:hidden">
@@ -203,14 +212,17 @@ export default function AppLayout({ children, onLogout }: { children: React.Reac
                   <span className="text-[10px] text-white/40 font-medium">AI 智能提取</span>
                 </div>
               </div>
-              <NavContent onNavigate={() => setMobileOpen(false)} />
+              <NavContent
+                onNavigate={() => setMobileOpen(false)}
+                onPasswordChanged={() => setMobileOpen(false)}
+                onLogout={() => {
+                  setMobileOpen(false);
+                  onLogout();
+                }}
+              />
             </SheetContent>
           </Sheet>
-          <span className="font-bold text-foreground lg:hidden">HRBP 面试官简历管理系统</span>
-          <div className="ml-auto flex items-center gap-1">
-            <ChangePasswordButton onComplete={() => setMobileOpen(false)} />
-            <LogoutButton onLogout={onLogout} />
-          </div>
+          <span className="font-bold text-foreground">HRBP 面试官简历管理系统</span>
         </header>
 
         <main className="relative flex-1 overflow-x-hidden p-2 md:p-4">
