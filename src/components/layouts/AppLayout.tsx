@@ -46,13 +46,13 @@ function NavContent({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
-function LogoutButton({ onLogout }: { onLogout: () => void }) {
+function LogoutButton({ onLogout, className }: { onLogout: () => void; className?: string }) {
   return (
     <Button
       type="button"
       variant="ghost"
       onClick={onLogout}
-      className="w-full justify-start rounded-xl px-4 py-3 text-xs font-medium text-white/50 hover:bg-white/10 hover:text-white"
+      className={cn("rounded-xl text-xs text-muted-foreground hover:text-foreground", className)}
     >
       <LogOut className="h-4 w-4" />
       退出登录
@@ -60,7 +60,7 @@ function LogoutButton({ onLogout }: { onLogout: () => void }) {
   );
 }
 
-function ChangePasswordButton({ onComplete }: { onComplete?: () => void }) {
+function ChangePasswordButton({ onComplete, className }: { onComplete?: () => void; className?: string }) {
   const [open, setOpen] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -125,7 +125,7 @@ function ChangePasswordButton({ onComplete }: { onComplete?: () => void }) {
         <Button
           type="button"
           variant="ghost"
-          className="w-full justify-start rounded-xl px-4 py-3 text-xs font-medium text-white/50 hover:bg-white/10 hover:text-white"
+          className={cn("rounded-xl text-xs text-muted-foreground hover:text-foreground", className)}
         >
           <KeyRound className="h-4 w-4" />
           修改密码
@@ -178,8 +178,6 @@ export default function AppLayout({ children, onLogout }: { children: React.Reac
         <NavContent />
         {/* 底部装饰 */}
         <div className="mt-auto p-4">
-          <ChangePasswordButton />
-          <LogoutButton onLogout={onLogout} />
           <div className="rounded-xl bg-white/5 p-3 border border-white/5">
             <p className="text-[10px] text-white/40 leading-relaxed">支持图片 / PDF / Word / Excel 格式</p>
           </div>
@@ -188,10 +186,10 @@ export default function AppLayout({ children, onLogout }: { children: React.Reac
 
       {/* 移动端头部 + Sheet */}
       <div className="flex-1 min-w-0 flex flex-col">
-        <header className="lg:hidden flex items-center gap-3 bg-white/70 backdrop-blur-2xl border-b border-cyan-100/80 px-4 py-3">
+        <header className="flex items-center gap-3 bg-white/70 backdrop-blur-2xl border-b border-cyan-100/80 px-4 py-3">
           <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
             <SheetTrigger asChild>
-              <Button variant="ghost" size="icon" className="shrink-0 text-foreground">
+              <Button variant="ghost" size="icon" className="shrink-0 text-foreground lg:hidden">
                 <Menu className="h-5 w-5" />
               </Button>
             </SheetTrigger>
@@ -206,26 +204,13 @@ export default function AppLayout({ children, onLogout }: { children: React.Reac
                 </div>
               </div>
               <NavContent onNavigate={() => setMobileOpen(false)} />
-              <div className="mt-auto p-4">
-                <ChangePasswordButton onComplete={() => setMobileOpen(false)} />
-                <LogoutButton onLogout={() => {
-                  setMobileOpen(false);
-                  onLogout();
-                }} />
-              </div>
             </SheetContent>
           </Sheet>
-          <span className="font-bold text-foreground">HRBP 面试官简历管理系统</span>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={onLogout}
-            className="ml-auto rounded-xl text-xs text-muted-foreground hover:text-foreground"
-          >
-            <LogOut className="h-4 w-4" />
-            退出
-          </Button>
+          <span className="font-bold text-foreground lg:hidden">HRBP 面试官简历管理系统</span>
+          <div className="ml-auto flex items-center gap-1">
+            <ChangePasswordButton onComplete={() => setMobileOpen(false)} />
+            <LogoutButton onLogout={onLogout} />
+          </div>
         </header>
 
         <main className="relative flex-1 overflow-x-hidden p-2 md:p-4">
