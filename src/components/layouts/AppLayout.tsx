@@ -7,7 +7,6 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { supabase } from "@/db/supabase";
-import { useAuth } from "@/contexts/AuthContext";
 import { FileUp, KeyRound, LogOut, Menu, Sparkles, Table2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -62,7 +61,6 @@ function LogoutButton({ onLogout }: { onLogout: () => void }) {
 }
 
 function ChangePasswordButton({ onComplete }: { onComplete?: () => void }) {
-  const { user } = useAuth();
   const [open, setOpen] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -94,7 +92,8 @@ function ChangePasswordButton({ onComplete }: { onComplete?: () => void }) {
       setMessage("两次输入的新密码不一致。");
       return;
     }
-    if (!user?.email) {
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError || !user?.email) {
       setMessage("未获取到当前登录账号，请重新登录后再试。");
       return;
     }
