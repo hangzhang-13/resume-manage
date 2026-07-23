@@ -170,11 +170,12 @@ export async function extractResume(fileUrl: string, fileName: string, force = f
 }
 
 // 调用提取简历 Edge Function（文本直接传给 LLM 解析）
-export async function extractResumeFromText(text: string, fileName: string, fileUrl?: string, force = false, duplicateData?: Record<string, string>, targetId?: string): Promise<ExtractResponse> {
+export async function extractResumeFromText(text: string, fileName: string, fileUrl?: string, force = false, duplicateData?: Record<string, string>, targetId?: string, nameHint?: string): Promise<ExtractResponse> {
   const body: Record<string, unknown> = { text, file_name: fileName, file_url: fileUrl || "" };
   if (force) body.force = true;
   if (duplicateData) body.duplicate_data = duplicateData;
   if (targetId) body.target_id = targetId;
+  if (nameHint) body.name_hint = nameHint;
 
   const { data, error } = await supabase.functions.invoke("extract-resume", { body });
 

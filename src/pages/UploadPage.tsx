@@ -11,6 +11,12 @@ import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { getResumeFileType, RESUME_FILE_ACCEPT } from "@/lib/resume-files";
 import { notifyResumesUpdated } from "@/lib/resume-events";
 import { normalizeEducationText, normalizeResumeText, normalizeWorkHistoryText } from "@/lib/resume-text";
+import {
+  inferCandidateNameFromFileName,
+  inferCandidateNameFromPdfItems,
+  inferCandidateNameFromPdfTitle,
+  type PdfTextItemLike,
+} from "@/lib/resume-name";
 import { STATUS_OPTIONS } from "@/lib/resume-status";
 import type { ResumeInsert, ResumeUpdate } from "@/types/types";
 
@@ -60,6 +66,11 @@ interface ConfirmDialogState {
   parsed: ParsedResult | null;
 }
 
+interface ExtractedResumeContent {
+  text: string;
+  candidateNameHint: string;
+}
+
 const defaultUploadNotes: UploadNotes = {
   interview_date: "",
   department: "",
@@ -93,27 +104,59 @@ function getExcelRowValues(row: { values: unknown }): unknown[] {
   return Array.isArray(row.values) ? row.values.slice(1) : [];
 }
 
-async function extractTextFromPdf(file: File): Promise<string> {
+function pdfItemsToText(items: PdfTextItemLike[]): string {
+  let text = "";
+  for (const item of items) {
+    const value = String(item.str || "");
+    if (value) text += value;
+    if (item.hasEOL) text += "\n";
+    else if (value && !/\s$/u.test(value)) text += " ";
+  }
+  return text.trim();
+}
+
+async function extractTextFromPdf(file: File): Promise<ExtractedResumeContent> {
   const pdfjs = await import("pdfjs-dist");
   pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjs.getDocument({ data: arrayBuffer, useSystemFonts: true }).promise;
   let text = "";
+  let candidateNameHint = "";
 
   try {
+    try {
+      const metadata = await pdf.getMetadata();
+      const title = "Title" in metadata.info ? String(metadata.info.Title || "") : "";
+      candidateNameHint = inferCandidateNameFromPdfTitle(title);
+    } catch {
+      // 部分 PDF 没有可读元数据；继续使用第一页文字位置识别姓名。
+    }
+
     for (let pageIndex = 1; pageIndex <= pdf.numPages; pageIndex += 1) {
       const page = await pdf.getPage(pageIndex);
       const content = await page.getTextContent();
-      text += content.items
-        .map((item: unknown) => {
-          if (typeof item !== "object" || item === null || !("str" in item)) return "";
-          return String((item as { str: unknown }).str);
-        })
-        .filter(Boolean)
-        .join(" ") + "\n";
+      const textItems: PdfTextItemLike[] = content.items.flatMap((item: unknown) => {
+        if (typeof item !== "object" || item === null || !("str" in item) || !("transform" in item)) return [];
+        const source = item as { str: unknown; transform: unknown; width?: unknown; height?: unknown; hasEOL?: unknown };
+        if (!Array.isArray(source.transform)) return [];
+        return [{
+          str: String(source.str || ""),
+          transform: source.transform.map(Number),
+          width: Number(source.width || 0),
+          height: Number(source.height || 0),
+          hasEOL: source.hasEOL === true,
+        }];
+      });
+      if (pageIndex === 1 && !candidateNameHint) {
+        const [x1 = 0, y1 = 0, x2 = 0, y2 = 0] = page.view;
+        const pageWidth = Math.abs(x2 - x1);
+        const pageHeight = Math.abs(y2 - y1);
+        candidateNameHint = inferCandidateNameFromPdfItems(textItems, pageWidth, pageHeight);
+      }
+      text += `${pdfItemsToText(textItems)}\n`;
     }
     const cleanedText = removePdfWatermarks(text);
-    if (hasUsableResumeText(cleanedText)) return cleanedText;
+    if (hasUsableResumeText(cleanedText)) return { text: cleanedText, candidateNameHint };
 
     // 扫描版 PDF 没有文字层：逐页渲染后交给本地 OCR。
     const pages: Blob[] = [];
@@ -130,7 +173,7 @@ async function extractTextFromPdf(file: File): Promise<string> {
       const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.86));
       if (blob) pages.push(blob);
     }
-    return extractTextFromImages(pages);
+    return { text: await extractTextFromImages(pages), candidateNameHint };
   } finally {
     await pdf.cleanup();
   }
@@ -239,26 +282,23 @@ async function extractTextFromHtml(file: File): Promise<string> {
   return cleanText(doc.body.innerText || doc.body.textContent || "");
 }
 
-async function extractTextFromFile(file: File, fileType: string): Promise<string> {
+async function extractTextFromFile(file: File, fileType: string): Promise<ExtractedResumeContent> {
+  if (fileType === "pdf") {
+    const result = await extractTextFromPdf(file);
+    return { ...result, text: cleanText(result.text) };
+  }
+
   let text = "";
-  if (fileType === "pdf") text = await extractTextFromPdf(file);
-  else if (fileType === "image") text = await extractTextFromImages([file]);
+  if (fileType === "image") text = await extractTextFromImages([file]);
   else if (fileType === "doc" || fileType === "docx") text = await extractTextFromDoc(file);
   else if (fileType === "xls" || fileType === "xlsx") text = await extractTextFromExcel(file);
   else if (fileType === "html") text = await extractTextFromHtml(file);
   else throw new Error("不支持的文件格式");
-  return cleanText(text);
+  return { text: cleanText(text), candidateNameHint: "" };
 }
 
 function cleanText(text: string): string {
   return normalizeResumeText(text);
-}
-
-function inferCandidateNameFromFileName(fileName: string): string {
-  const baseName = fileName.replace(/\.[^.]+$/, "");
-  // 标准命名如“C03352561-裴沛东-原始简历 (1).pdf”中的姓名可信度高于图片 OCR。
-  const match = baseName.match(/(?:^|[-_])(?:C\d+[-_])?([\u4e00-\u9fff]{2,5})(?=[-_](?:原始)?简历)/);
-  return match?.[1] || "";
 }
 
 /** 将多行文本格式化为带序号的列表（每行前加 "1. "、"2. "...） */
@@ -389,10 +429,12 @@ export default function UploadPage() {
       update({ status: type === "image" ? "uploading" : "extracting", progress: 30, message: existing ? "检测到同名文件，正在重新解析..." : type === "image" ? "正在上传..." : "正在解析文件内容..." });
       const fileUrl = await uploadResumeFile(file);
       if (type === "image") update({ status: "extracting", progress: 55, message: "正在进行本地 OCR 文字识别..." });
-      const text = await extractTextFromFile(file, type);
+      const extractedContent = await extractTextFromFile(file, type);
+      const text = extractedContent.text;
       if (!text || text.trim().length === 0) throw new Error("无法从文件中提取文字内容");
+      const candidateNameHint = inferCandidateNameFromFileName(file.name) || extractedContent.candidateNameHint;
       update({ progress: 80, message: "AI 正在分析简历..." });
-      const resp = await extractResumeFromText(text, file.name, fileUrl, false, undefined, existing?.id);
+      const resp = await extractResumeFromText(text, file.name, fileUrl, false, undefined, existing?.id, candidateNameHint);
       if (resp.merged && resp.name) {
         notifyResumesUpdated();
         toast.info(`检测到重复简历，已自动合并并更新到 ${resp.name} 所在记录`);

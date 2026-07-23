@@ -1,5 +1,6 @@
 export function normalizeResumeText(text: string): string {
   return String(text || "")
+    .normalize("NFKC")
     .replace(/\\n/g, "\n")
     .replace(/\\r/g, "")
     .replace(/\r/g, "")

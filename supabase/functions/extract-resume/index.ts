@@ -97,6 +97,7 @@ serve(async (req: Request): Promise<Response> => {
   let force: boolean;
   let duplicateData: ResumeData | undefined;
   let targetId: string | undefined;
+  let nameHint: string | undefined;
 
   try {
     const body = await req.json();
@@ -106,6 +107,7 @@ serve(async (req: Request): Promise<Response> => {
     force = body.force === true;
     duplicateData = body.duplicate_data;
     targetId = body.target_id;
+    nameHint = typeof body.name_hint === "string" ? body.name_hint : undefined;
     if (!fileUrl && !text) throw new Error("Missing file_url or text");
   } catch {
     return new Response(JSON.stringify({ error: "Invalid request body" }), {
@@ -172,7 +174,8 @@ serve(async (req: Request): Promise<Response> => {
         throw new Error("无法从文件中提取文字内容");
       }
 
-      resumeData = await extractResumeInfo(deepSeekApiKey, extractText);
+      const verifiedNameHint = verifyCandidateNameHint(nameHint, extractText);
+      resumeData = await extractResumeInfo(deepSeekApiKey, extractText, verifiedNameHint);
     }
 
     // 用人部门属于招聘方补充信息，不能从简历正文或文件名推断。
@@ -296,7 +299,8 @@ async function downloadResumeFile(
 
 // 清除文本中的噪声空格，避免姓名、公司名、年限等字段被拆开。
 function cleanText(text: string): string {
-  return text
+  return String(text || "")
+    .normalize("NFKC")
     .replace(/\u00a0/g, " ")
     .replace(/[ \t]+/g, " ")
     .replace(/\s*([:/：,，;；、()（）[\]【】])\s*/g, "$1")
@@ -308,6 +312,63 @@ function cleanText(text: string): string {
     .replace(/[ \t]*\n[ \t]*/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+const COMMON_CHINESE_SURNAMES = new Set(Array.from(
+  "赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦尤许何吕施张孔曹严华金魏陶姜戚谢邹喻柏水窦章云苏潘葛奚范彭郎鲁韦昌马苗凤花方俞任袁柳鲍史唐费廉岑薛雷贺倪汤滕殷罗毕郝邬安常乐于时傅皮卞齐康伍余元卜顾孟平黄和穆萧尹姚邵湛汪祁毛禹狄米贝明臧计伏成戴谈宋茅庞熊纪舒屈项祝董梁杜阮蓝闵席季麻强贾路娄危江童颜郭梅盛林刁钟徐邱骆高夏蔡田樊胡凌霍虞万柯管卢莫房裘解应宗丁宣邓郁单杭洪包诸左石崔吉龚程嵇邢裴陆荣翁荀羊甄曲封芮储靳井段富巫乌焦巴弓牧山谷车侯全班秋仲伊宫宁仇栾甘厉祖武符刘景詹束龙叶司韶郜黎白怀蒲从鄂索咸赖卓蔺屠蒙池乔胥苍闻党翟谭劳姬申扶冉宰雍桑桂牛寿通边扈燕尚农温庄晏柴瞿阎慕连茹习艾鱼容向古易慎戈廖庾居衡步都耿满弘匡国文寇广东欧沃利越师巩聂晁勾敖融冷辛那简饶曾沙养鞠丰巢关相查后荆红游竺权盖益桓公",
+));
+
+const COMPOUND_CHINESE_SURNAMES = [
+  "欧阳", "太史", "端木", "上官", "司马", "东方", "独孤", "南宫", "万俟", "闻人",
+  "夏侯", "诸葛", "尉迟", "公羊", "赫连", "澹台", "皇甫", "宗政", "濮阳", "公冶",
+  "太叔", "申屠", "公孙", "慕容", "仲孙", "钟离", "长孙", "宇文", "司徒", "鲜于", "司空",
+];
+
+const NON_NAME_HEADINGS = new Set([
+  "个人简历", "求职简历", "应聘简历", "中文简历", "基本信息", "个人信息", "个人总结", "个人简介",
+  "工作经历", "工作经验", "教育背景", "联系方式", "求职意向", "应聘岗位", "产品专家", "产品经理",
+]);
+
+function normalizeChineseName(value: string): string {
+  return String(value || "")
+    .normalize("NFKC")
+    .replace(/^姓名\s*[:：]?\s*/u, "")
+    .replace(/[\s·•・]+/gu, "")
+    .trim();
+}
+
+function isLikelyChineseName(value: string): boolean {
+  const name = normalizeChineseName(value);
+  if (!/^[\p{Script=Han}]{2,4}$/u.test(name) || NON_NAME_HEADINGS.has(name)) return false;
+  return COMPOUND_CHINESE_SURNAMES.some((surname) => name.startsWith(surname)) || COMMON_CHINESE_SURNAMES.has(name[0]);
+}
+
+function compactForSourceCheck(value: string): string {
+  return String(value || "")
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .replace(/[\s\p{P}\p{S}]+/gu, "");
+}
+
+function isNameSupportedBySource(name: string, resumeText: string): boolean {
+  const compactName = compactForSourceCheck(name);
+  return compactName.length >= 2 && compactForSourceCheck(resumeText).includes(compactName);
+}
+
+function inferChineseNameFromText(resumeText: string): string {
+  const lines = String(resumeText || "").normalize("NFKC").split(/\r?\n/).slice(0, 14);
+  for (const rawLine of lines) {
+    const line = rawLine.trim().replace(/^姓名\s*[:：]?\s*/u, "");
+    const match = line.match(/^([\p{Script=Han}]{2,4})(?=$|[\sA-Za-z0-9|｜·•])/u);
+    if (match && isLikelyChineseName(match[1])) return match[1];
+  }
+  return "";
+}
+
+function verifyCandidateNameHint(nameHint: string | undefined, resumeText: string): string {
+  const normalizedHint = normalizeChineseName(nameHint || "");
+  if (!isLikelyChineseName(normalizedHint)) return "";
+  return isNameSupportedBySource(normalizedHint, resumeText) ? normalizedHint : "";
 }
 
 function countFilledFields(data: ResumeData | ResumeRecord): number {
@@ -399,7 +460,7 @@ function inferNature(workHistory: string): string {
   return "社招";
 }
 
-async function extractResumeInfo(apiKey: string, resumeText: string): Promise<ResumeData> {
+async function extractResumeInfo(apiKey: string, resumeText: string, verifiedNameHint = ""): Promise<ResumeData> {
   const prompt = `你是一个简历信息提取助手。请从以下简历文本中提取关键信息，并严格按照 JSON 格式返回。
 
 格式要求：
@@ -412,6 +473,9 @@ async function extractResumeInfo(apiKey: string, resumeText: string): Promise<Re
 - work_history 和 education 是完全独立的字段，学校信息只能出现在 education 中，绝对不能出现在 work_history 中
 - 所有字段只输出提取到的原始信息，不要添加任何解释、注释或括号说明
 - 如果某个字段提取不到内容，返回空字符串，不要编造或补充
+- name 必须逐字复制简历原文，禁止纠正常用字、音译、缩写或生成原文不存在的姓名
+- 同一行同时出现中文名和英文名时，优先返回中文名
+${verifiedNameHint ? `- 系统已从 PDF 第一页位置和原始文本双重确认候选人姓名为“${verifiedNameHint}”，name 必须返回这个值` : "- 如果无法确认姓名，name 返回空字符串"}
 
 需要提取的字段：
 - interview_date: 面试时间（如果文本中没有，返回空字符串）
@@ -492,6 +556,14 @@ ${resumeText}
       result[key] = cleanText(result[key]);
     }
   });
+
+  // 姓名属于高风险主键字段：优先采用 PDF 位置识别且已在原文复核的值。
+  // 模型返回原文不存在的姓名时，改用首页文本候选；仍不确定则等待人工确认。
+  if (verifiedNameHint) {
+    result.name = verifiedNameHint;
+  } else if (!isNameSupportedBySource(result.name, resumeText)) {
+    result.name = inferChineseNameFromText(resumeText) || "未知";
+  }
 
   // 如果 position 为空但 work_history 有内容，从最近履历自动提取职位
   if (!result.position && result.work_history) {
